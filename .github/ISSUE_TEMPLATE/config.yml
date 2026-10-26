@@ -1,10 +1,14 @@
 # SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
+# D1 Reimagined fork: issues here are for this build only. General shadPS4 problems belong upstream.
 blank_issues_enabled: false
 contact_links:
-  - name: Discord
-    url: https://discord.gg/bFJxfftGW6
-    about: Get direct support and hang out with us
-  - name: Wiki
-    url: https://github.com/shadps4-emu/shadPS4/wiki
-    about: Information, guides, etc.
+  - name: D1 Reimagined Discord
+    url: https://d1reimagined.com/discord
+    about: Questions and help with this build, in the help forum.
+  - name: Project tasks and research
+    url: https://github.com/p3n1cillin/d1reimagined-source/issues
+    about: Contributor tasks and D1 Reimagined issues live in the main source repository.
+  - name: General shadPS4 problems
+    url: https://github.com/shadps4-emu/shadPS4/issues
+    about: Problems that also happen on upstream shadPS4 belong there, not here.

@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 D1 Reimagined
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Build or run problem (D1 build)
+description: The d1 branch fails to build or behaves differently from upstream shadPS4.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This fork is shadPS4 plus the fixes D1 Reimagined needs. If the same problem happens on upstream shadPS4, please report it upstream instead. Never attach game files, firmware, keys or account data.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit on the d1 branch
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Build output or log
+      description: Relevant lines only. Remove personal paths first.
+      render: text
+  - type: checkboxes
+    id: inputs
+    attributes:
+      label: Inputs
+      options:
+        - label: This report contains no game files, firmware, keys or account data.
+          required: true

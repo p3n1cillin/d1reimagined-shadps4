@@ -184,14 +184,15 @@ int PS4_SYSV_ABI sceNetCtlGetInfo(int code, OrbisNetCtlInfo* info) {
                                                              : ORBIS_NET_CTL_LINK_DISCONNECTED;
         break;
     case ORBIS_NET_CTL_INFO_IP_ADDRESS: {
-        strcpy(info->ip_address,
-               "127.0.0.1"); // placeholder in case ip retrieval failed
-        auto success = netinfo->RetrieveIp();
-        if (success) {
-            strncpy(info->ip_address, netinfo->GetIp().data(), sizeof(info->ip_address));
-        } else {
+        // D1-PRESERVATION FORK-LOCAL CHANGE: on failure report NOT_AVAIL with an empty address
+        // instead of a fabricated 127.0.0.1 with success, so the guest takes its own error path.
+        memset(info->ip_address, 0, sizeof(info->ip_address));
+        if (!netinfo->RetrieveIp()) {
             LOG_WARNING(Lib_NetCtl, "local ip: failed to retrieve");
+            return ORBIS_NET_CTL_ERROR_NOT_AVAIL;
         }
+        strncpy(info->ip_address, netinfo->GetIp().data(), sizeof(info->ip_address) - 1);
+        LOG_INFO(Lib_NetCtl, "local ip: {}", info->ip_address);
         break;
     }
     case ORBIS_NET_CTL_INFO_NETMASK: {

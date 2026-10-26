@@ -114,3 +114,9 @@ SPDX-License-Identifier = "MIT"
 path = "src/video_core/host_shaders/fsr/*"
 SPDX-FileCopyrightText = "Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved."
 SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["d1/README.md", "d1/config.d1.json", "d1/Build-D1ShadPS4.cmd"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 D1 Reimagined contributors"
+SPDX-License-Identifier = "GPL-2.0-or-later"

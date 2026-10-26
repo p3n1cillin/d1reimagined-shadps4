@@ -3,6 +3,12 @@ SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
+> **D1 Reimagined fork.** This is upstream shadPS4 v0.19.0 plus the commits on the `d1` branch that
+> the [D1 Reimagined](https://github.com/p3n1cillin/d1reimagined-source) project needs to run
+> Destiny (PS4) against its own servers. Build, settings and environment variables:
+> [`d1/README.md`](d1/README.md). Upstream: [shadps4-emu/shadPS4](https://github.com/shadps4-emu/shadPS4).
+
+
 <h1 align="center">
   <br>
   <a href="https://shadps4.net/"><img src="https://github.com/shadps4-emu/shadPS4/blob/main/.github/shadps4.png" width="220"></a>

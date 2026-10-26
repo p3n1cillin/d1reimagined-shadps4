@@ -1,0 +1,18 @@
+{
+    "General": {
+        "shad_net_enabled": true,
+        "shadnet_server": "127.0.0.1:31313",
+        "shadnet_webapi_server": "http://127.0.0.1:31315",
+        "connected_to_network": true,
+        "enable_upnp": false
+    },
+    "GPU": {
+        "window_width": 1920,
+        "window_height": 1080,
+        "internal_screen_width": 1920,
+        "internal_screen_height": 1080
+    },
+    "Vulkan": {
+        "pipeline_cache_enabled": true
+    }
+}

@@ -2648,8 +2648,14 @@ RedZonePatchResult PatchCpuInstructionsStatically(u64 segment_addr, u64 segment_
 // End Windows static guest red-zone protection
 // ============================================================================
 
-static bool PatchesAccessViolationHandler(void* context, void* /* fault_address */) {
-    return TryPatchJit(Common::GetRip(context));
+static bool PatchesAccessViolationHandler(void* context, void* fault_address) {
+    auto* code = static_cast<u8*>(Common::GetRip(context));
+    const auto* fault = static_cast<const u8*>(fault_address);
+    const bool fetch_fault = fault >= code && fault < code + ZYDIS_MAX_INSTRUCTION_LENGTH;
+    if (fetch_fault) {
+        return false;
+    }
+    return TryPatchJit(code);
 }
 
 static bool PatchesIllegalInstructionHandler(void* context) {

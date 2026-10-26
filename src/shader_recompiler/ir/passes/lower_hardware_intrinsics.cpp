@@ -19,6 +19,9 @@ static void LowerCmpClass(IR::Block& block, IR::Inst& inst) {
         const IR::F32 value = IR::F32{inst.Arg(0)};
         inst.ReplaceUsesWithAndRemove(
             ir.LogicalNot(ir.LogicalOr(ir.FPIsNan(value), ir.FPIsInf(value))));
+    } else if (class_mask == IR::FloatClassFunc::QuietNan ||
+               class_mask == IR::FloatClassFunc::SignalingNan) {
+        inst.ReplaceOpcode(IR::Opcode::FPIsNan32);
     } else {
         UNREACHABLE();
     }

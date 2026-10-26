@@ -136,6 +136,9 @@ ProbeInfo ProbeServer(const std::string& host, u16 port, u32 timeout_ms) {
         SHAD_CLOSE(sock);
         LOG_WARNING(ShadNet, "probe: {}:{} reachable but no ServerInfo header received", host,
                     port);
+        // D1 fork: a header that did not arrive in time is a timeout, not a malformed handshake;
+        // report it as Unreachable so the caller's retry applies.
+        info.result = ProbeResult::Unreachable;
         return info;
     }
     if (static_cast<PacketType>(hdr[0]) != PacketType::ServerInfo) {

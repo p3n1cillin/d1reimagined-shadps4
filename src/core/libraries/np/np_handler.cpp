@@ -107,7 +107,17 @@ void NpHandler::Initialize() {
 
     {
         const auto [host, port] = ParseServerAddress();
-        const ShadNet::ProbeInfo probe = ShadNet::ProbeServer(host, port);
+        // D1 fork: retry the probe. A single 3 s window lost the ServerInfo handshake on some
+        // boots under load (BUFFALO), although the local server sends it on accept. Up to five
+        // attempts of SHAD_PROBE_TIMEOUT_MS each; a real version mismatch or protocol error is
+        // not retried.
+        ShadNet::ProbeInfo probe = ShadNet::ProbeServer(host, port);
+        for (int attempt = 2; attempt <= 5 && probe.result == ShadNet::ProbeResult::Unreachable;
+             ++attempt) {
+            LOG_WARNING(NpHandler, "shadNet probe of {}:{} failed; retrying ({}/5)", host, port,
+                        attempt);
+            probe = ShadNet::ProbeServer(host, port);
+        }
         if (probe.result != ShadNet::ProbeResult::Ok) {
             EmulatorSettings.SetShadNetSessionDisabled(true);
             switch (probe.result) {

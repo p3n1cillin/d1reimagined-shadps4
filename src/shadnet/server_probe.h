@@ -9,7 +9,7 @@
 namespace ShadNet {
 
 // Default timeout for the startup reachability probe.
-static constexpr u32 SHAD_PROBE_TIMEOUT_MS = 3000;
+static constexpr u32 SHAD_PROBE_TIMEOUT_MS = 10000; // D1 fork: was 3000 (BUFFALO under boot load)
 
 enum class ProbeResult {
     Ok,              // reachable and protocol version matches SHAD_PROTOCOL_VERSION

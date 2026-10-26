@@ -3,7 +3,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <string>
 #include <memory>
 #include <thread>
 #include <SDL3/SDL_audio.h>
@@ -93,8 +98,42 @@ public:
         if (!SDL_PutAudioStreamData(stream, internal_buffer, internal_buffer_size)) [[unlikely]] {
             LOG_ERROR(Lib_AudioOut, "Failed to output to SDL audio stream: {}", SDL_GetError());
         }
+        D1Tap();
 
         last_output_time.store(current_time, std::memory_order_release);
+    }
+
+    // D1: game-audio tap for recordings. With D1_AUDIO_TAP=DIR set, every port appends its
+    // converted (pre-gain) float samples to DIR/port<N>-<rate>-<channels>-<unix ms>.f32 while
+    // DIR/rec.flag exists; the file name carries the wall-clock time of its first sample.
+    void D1Tap() {
+        static const char* dir = std::getenv("D1_AUDIO_TAP");
+        if (!dir || !*dir) {
+            return;
+        }
+        if ((tap_count++ & 0x7) == 0) {
+            const bool want = std::filesystem::exists(std::string(dir) + "/rec.flag");
+            if (want && !tap_file) {
+                static std::atomic<u32> next_port{0};
+                if (tap_port == ~0u) {
+                    tap_port = next_port++;
+                }
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+                const std::string path = std::string(dir) + "/port" + std::to_string(tap_port) +
+                                         "-" + std::to_string(sample_rate) + "-" +
+                                         std::to_string(ps4_downmix ? 2u : num_channels) + "-" +
+                                         std::to_string(ms) + ".f32";
+                tap_file = std::fopen(path.c_str(), "wb");
+            } else if (!want && tap_file) {
+                std::fclose(tap_file);
+                tap_file = nullptr;
+            }
+        }
+        if (tap_file) {
+            std::fwrite(internal_buffer, 1, internal_buffer_size, tap_file);
+        }
     }
 
     void SetVolume(const std::array<int, 8>& ch_volumes) override {
@@ -174,6 +213,10 @@ private:
     }
 
     void Cleanup() {
+        if (tap_file) {
+            std::fclose(tap_file);
+            tap_file = nullptr;
+        }
         if (stream) {
             SDL_DestroyAudioStream(stream);
             stream = nullptr;
@@ -639,6 +682,10 @@ private:
     u64 next_output_time{0};
     u64 last_volume_check_time{0};
     u32 output_count{0};
+    // D1 audio tap
+    u32 tap_count{0};
+    u32 tap_port{~0u};
+    std::FILE* tap_file{nullptr};
 
     // Buffers
     u32 internal_buffer_size{0};

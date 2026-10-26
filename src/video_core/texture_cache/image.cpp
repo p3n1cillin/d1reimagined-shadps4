@@ -223,6 +223,13 @@ ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_sam
 void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::AccessFlags2 dst_mask,
                         vk::PipelineStageFlags2 dst_stage,
                         std::optional<SubresourceRange> subres_range) {
+    // D1 FORK-LOCAL CHANGE: a 3D image has one array layer; a 2D view of one of its depth slices
+    // (a render target writing slice z of a colour-grading volume) still transitions the whole
+    // image. Without this the slice index is taken as a layer index and overruns the state table.
+    if (info.props.is_volume && subres_range) {
+        subres_range->base.layer = 0;
+        subres_range->extent.layers = info.resources.layers;
+    }
     auto& last_state = backing->state;
     auto& subresource_states = backing->subresource_states;
 

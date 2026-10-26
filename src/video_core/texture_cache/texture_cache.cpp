@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <xxhash.h>
 
 #include "common/assert.h"
@@ -21,6 +22,20 @@
 #include "video_core/texture_cache/tile_manager.h"
 
 namespace VideoCore {
+
+// D1 diagnostics: D1_TRACE_IMAGE=<hex address> traces lookups, creation, expansion and freeing
+// of images at that address.
+static VAddr D1TraceAddr() {
+    static const VAddr a = [] {
+        const char* v = std::getenv("D1_TRACE_IMAGE");
+        return v ? static_cast<VAddr>(std::strtoull(v, nullptr, 16)) : VAddr{0};
+    }();
+    return a;
+}
+static bool D1Traced(VAddr addr) {
+    static u32 n = 0;
+    return D1TraceAddr() && addr == D1TraceAddr() && g_d1_dump_live.load() && ++n < 3000;
+}
 
 static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
 static constexpr u32 MAX_IMAGE_VIEWS = std::numeric_limits<u16>::max();
@@ -323,6 +338,16 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {merged_image_id, -1, -1};
         }
 
+        // D1-PRESERVATION FORK-LOCAL CHANGE: the same address reused for an image of a different
+        // TYPE with a larger footprint (Destiny 56578 loading pvp_moonbase: same format, tile mode
+        // and resources, 16x the size). Treat it like the tile-mode reuse above instead of aborting.
+        if (image_info.type != cache_image.info.type) {
+            if (safe_to_delete) {
+                FreeImage(cache_image_id);
+            }
+            return {merged_image_id, -1, -1};
+        }
+
         // Enhanced debug logging for unreachable case
         // Calculate expected size based on format and dimensions
         u64 expected_size =
@@ -487,6 +512,12 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     const auto new_image_id = slot_images.Insert(instance, runtime, slot_image_views, info);
     RegisterImage(new_image_id);
+    if (D1Traced(info.guest_address)) {
+        const auto& o = slot_images[image_id].info;
+        LOG_WARNING(Render_Vulkan, "D1 trace expand #{} type {} d{} L{} -> #{} type {} d{} L{}",
+                    image_id.index, u32(o.type), o.size.depth, o.resources.layers,
+                    new_image_id.index, u32(info.type), info.size.depth, info.resources.layers);
+    }
 
     auto& src_image = slot_images[image_id];
     auto& new_image = slot_images[new_image_id];
@@ -506,6 +537,21 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
 ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
     ASSERT(info.guest_address != 0);
+    // D1 diagnostics: D1_TRACE_IMAGE=<hex address> logs every lookup of that address.
+    static const VAddr d1_trace = [] {
+        const char* v = std::getenv("D1_TRACE_IMAGE");
+        return v ? static_cast<VAddr>(std::strtoull(v, nullptr, 16)) : VAddr{0};
+    }();
+    static u32 d1_traced = 0;
+    if (d1_trace && info.guest_address == d1_trace && g_d1_dump_live.load() &&
+        d1_traced < 3000) {
+        ++d1_traced;
+        LOG_WARNING(Render_Vulkan, "D1 trace {:#x}: type {} {}x{}x{} L{} bind {} view base {} n {} size {:#x}",
+                    info.guest_address, static_cast<u32>(info.type), info.size.width,
+                    info.size.height, info.size.depth, info.resources.layers,
+                    static_cast<u32>(desc.type), desc.view_info.range.base.layer,
+                    desc.view_info.range.extent.layers, info.guest_size);
+    }
 
     std::scoped_lock lock{mutex};
     ImageIds image_ids;
@@ -513,6 +559,49 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
                          [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
 
     ImageId image_id{};
+
+    // D1 FORK-LOCAL CHANGE: a render target that grows a 2D array by one layer per draw (Destiny
+    // builds its 32^3 colour-grading LUT this way: layers 0..z, view slice z) must extend the
+    // array it grew last time. The LUT's memory is a pooled allocation that other targets reuse
+    // within the frame (a 32x32 target with an 8-layer footprint, a 12x18 UI target), and their
+    // images used to be merged into the chain instead: the 8-layer request "perfectly matched" the
+    // other 32x32 image, two chains then grew side by side, and the LUT kept the wrong one, with
+    // stale memory in its darkest slices (black, blue-tinted shadows). Extend the predecessor
+    // (same format and size, one layer fewer, most recently used) and drop the other images at
+    // this address.
+    const auto& grow = desc.view_info.range;
+    if (desc.type == BindingType::RenderTarget && info.type == AmdGpu::ImageType::Color2D &&
+        info.resources.layers > 1 && grow.extent.layers == 1 &&
+        grow.base.layer == info.resources.layers - 1) {
+        ImageId pred{};
+        for (const auto& cache_id : image_ids) {
+            const auto& c = slot_images[cache_id];
+            if (c.info.guest_address == info.guest_address && c.info.type == info.type &&
+                c.info.pixel_format == info.pixel_format && c.info.size == info.size &&
+                c.info.resources.levels == info.resources.levels &&
+                c.info.resources.layers + 1 == info.resources.layers &&
+                // its footprint is exactly the first L-1 layers (the other 32x32 target at
+                // this address also has one layer, but an 8-layer footprint)
+                u64(c.info.guest_size) * info.resources.layers ==
+                    u64(info.guest_size) * c.info.resources.layers &&
+                (!pred || c.tick_accessed_last > slot_images[pred].tick_accessed_last)) {
+                pred = cache_id;
+            }
+        }
+        if (pred) {
+            for (const auto& cache_id : image_ids) {
+                if (cache_id != pred &&
+                    slot_images[cache_id].info.guest_address == info.guest_address) {
+                    FreeImage(cache_id);
+                }
+            }
+            image_id = ExpandImage(info, pred);
+            Image& image = slot_images[image_id];
+            image.tick_accessed_last = scheduler.CurrentTick();
+            TouchImage(image);
+            return image_id;
+        }
+    }
 
     // Check for a perfect match first
     for (const auto& cache_id : image_ids) {
@@ -555,22 +644,123 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         }
     }
 
+    // D1 FORK-LOCAL CHANGE (D1_VOLUME_SLICES=3): a render target never writes into a 3D image
+    // through a slice view. Destiny renders its 32^3 colour-grading LUT one slice per draw into
+    // a 2D array (layers 0..z, view slice z) and then samples it as 3D; the 3D request copies the
+    // array into a volume (ResolveOverlap -> ExpandImage -> 2D array -> 3D copy). Next frame
+    // slice 0 resolved to that volume as a "view", and slice 1 then dropped it and re-created the
+    // array from stale guest memory, so the LUT lost its darkest slice every frame (crushed,
+    // blue-tinted shadows). Give the target a fresh 2D image instead.
+    if (image_id) {
+        static const int d1_volume_mode = [] {
+            const char* v = std::getenv("D1_VOLUME_SLICES");
+            return v ? v[0] - '0' : 3;
+        }();
+        Image& candidate = slot_images[image_id];
+        if (d1_volume_mode == 3 && candidate.info.props.is_volume &&
+            desc.type == BindingType::RenderTarget && info.type != AmdGpu::ImageType::Color3D) {
+            FreeImage(image_id);
+            image_id = {};
+        }
+    }
     if (image_id) {
         Image& image_resolved = slot_images[image_id];
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
         } else if (image_resolved.info.resources < info.resources) {
-            // The image was clearly picked up wrong.
-            FreeImage(image_id);
-            image_id = {};
-            LOG_WARNING(Render_Vulkan, "Image overlap resolve failed");
+            // D1 FORK-LOCAL CHANGE: a view asking for MORE layers/levels of the same image (Destiny
+            // 56578 grows 32-layer arrays one layer at a time, ~10k times per session) used to free
+            // the cached image and re-create it from guest memory, discarding everything the GPU
+            // had written into it. Expand it instead, as ResolveOverlap does, so the old layers
+            // are copied into the new image.
+            // D1 FORK-LOCAL CHANGE: a render target over a 3D image's depth slices (Destiny
+            // builds its 32^3 colour-grading volume slice by slice; the CB view names slices
+            // [slice_start, slice_max]) must render INTO the volume. The 3D image is created
+            // 2D-array compatible, so the target's 2D(-array) view selects those slices.
+            // D1_VOLUME_SLICES=1 enables it (default 3, see above; 0 = upstream behaviour).
+            // D1_VOLUME_SLICES=2: the render target only ALIASES the volume's memory (measured on
+            // Destiny 56578: always a 32x32 2-layer target writing slice 1 at the colour-grading
+            // LUT's address, a pooled allocation). Keep the volume and give the target its own image.
+            static const int volume_mode = [] {
+                const char* v = std::getenv("D1_VOLUME_SLICES");
+                return v ? v[0] - '0' : 3;
+            }();
+            const bool volume_slices = volume_mode == 1;
+            const bool volume_alias = volume_mode == 2;
+            const auto& vr = desc.view_info.range;
+            const bool slice_of_volume =
+                image_resolved.info.props.is_volume && desc.type == BindingType::RenderTarget &&
+                image_resolved.info.size.width == info.size.width &&
+                image_resolved.info.size.height == info.size.height &&
+                vr.base.layer + vr.extent.layers <= image_resolved.info.size.depth &&
+                IsVulkanFormatCompatible(image_resolved.info.pixel_format, info.pixel_format);
+            if (image_resolved.info.type == info.type &&
+                image_resolved.info.pixel_format == info.pixel_format &&
+                image_resolved.info.size == info.size) {
+                image_id = ExpandImage(info, image_id);
+            } else if (volume_slices && slice_of_volume) {
+                // Keep the volume; the render target view writes its slices.
+            } else if (volume_alias && image_resolved.info.props.is_volume &&
+                       desc.type == BindingType::RenderTarget) {
+                // Leave the volume registered. Reuse the one target image at this address (or
+                // replace it if it is too small), so images do not pile up on the same pages.
+                image_id = {};
+                for (const auto& other_id : image_ids) {
+                    Image& other = slot_images[other_id];
+                    if (other.info.props.is_volume ||
+                        other.info.guest_address != info.guest_address) {
+                        continue;
+                    }
+                    if (!image_id && other.info.type == info.type &&
+                        other.info.pixel_format == info.pixel_format &&
+                        other.info.size == info.size && !(other.info.resources < info.resources)) {
+                        image_id = other_id;
+                    } else {
+                        FreeImage(other_id);
+                    }
+                }
+            } else {
+                // The image was clearly picked up wrong.
+                static u32 logged = 0;
+                if (logged < 200) {
+                    ++logged;
+                    LOG_WARNING(Render_Vulkan,
+                                "Image overlap resolve failed: cached type {} fmt {} {}x{}x{} L{} M{}"
+                                " vol {} -> wanted type {} fmt {} {}x{}x{} L{} M{} bind {} view "
+                                "base {} n {} @ {:#x}",
+                                static_cast<u32>(image_resolved.info.type),
+                                static_cast<u32>(image_resolved.info.pixel_format),
+                                image_resolved.info.size.width, image_resolved.info.size.height,
+                                image_resolved.info.size.depth,
+                                image_resolved.info.resources.layers,
+                                image_resolved.info.resources.levels,
+                                image_resolved.info.props.is_volume ? 1 : 0,
+                                static_cast<u32>(info.type), static_cast<u32>(info.pixel_format),
+                                info.size.width, info.size.height, info.size.depth,
+                                info.resources.layers, info.resources.levels,
+                                static_cast<u32>(desc.type), vr.base.layer, vr.extent.layers,
+                                info.guest_address);
+                }
+                FreeImage(image_id);
+                image_id = {};
+            }
         }
     }
     // Create and register a new image
     if (!image_id) {
         image_id = slot_images.Insert(instance, runtime, slot_image_views, info);
         RegisterImage(image_id);
+        if (D1Traced(info.guest_address)) {
+            LOG_WARNING(Render_Vulkan, "D1 trace new #{} type {} {}x{}x{} L{} (from guest memory)",
+                        image_id.index, u32(info.type), info.size.width, info.size.height,
+                        info.size.depth, info.resources.layers);
+        }
+    } else if (D1Traced(info.guest_address)) {
+        const auto& r = slot_images[image_id].info;
+        LOG_WARNING(Render_Vulkan, "D1 trace -> #{} type {} {}x{}x{} L{} view base {}",
+                    image_id.index, u32(r.type), r.size.width, r.size.height, r.size.depth,
+                    r.resources.layers, view_slice);
     }
 
     Image& image = slot_images[image_id];
@@ -816,6 +1006,11 @@ void TextureCache::RegisterImage(ImageId image_id) {
 }
 
 void TextureCache::UnregisterImage(ImageId image_id) {
+    if (D1Traced(slot_images[image_id].info.guest_address)) {
+        const auto& r = slot_images[image_id].info;
+        LOG_WARNING(Render_Vulkan, "D1 trace free #{} type {} {}x{}x{} L{}", image_id.index,
+                    u32(r.type), r.size.width, r.size.height, r.size.depth, r.resources.layers);
+    }
     Image& image = slot_images[image_id];
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
                "Trying to unregister an already unregistered image");

@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include <mutex>
 #include <unordered_set>
 #include <boost/container/small_vector.hpp>
@@ -27,6 +29,9 @@ class Runtime;
 }
 
 namespace VideoCore {
+
+/// D1: true while a frame dump (D1_DUMP_DIR) is capturing; gates the D1_TRACE_IMAGE trace.
+inline std::atomic<bool> g_d1_dump_live{false};
 
 class BufferCache;
 class PageManager;

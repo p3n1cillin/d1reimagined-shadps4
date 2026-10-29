@@ -7,6 +7,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 > the [D1 Reimagined](https://github.com/p3n1cillin/d1reimagined-source) project needs to run
 > Destiny (PS4) against its own servers. Build, settings and environment variables:
 > [`d1/README.md`](d1/README.md). Upstream: [shadps4-emu/shadPS4](https://github.com/shadps4-emu/shadPS4).
+>
+> [![A Guardian Rises progress](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1reimagined.com%2Fbadge%2Fmission.json)](https://d1reimagined.com/progress?ref=github) Watch Destiny running in this build: [Dev Blogs](https://d1reimagined.com/latest?ref=github) · [YouTube](https://www.youtube.com/@d1reimagined)
 
 
 <h1 align="center">

@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 D1 Reimagined contributors
+SPDX-License-Identifier: GPL-2.0-or-later
+-->
+
 <!-- D1 Reimagined fork: base the PR on `d1`. See d1/README.md (Contributing); agents: AGENTS.md. -->
 
 ### What

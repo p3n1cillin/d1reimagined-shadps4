@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 D1 Reimagined contributors
+SPDX-License-Identifier: GPL-2.0-or-later
+-->
+
 # AGENTS.md
 
 This is the D1 Reimagined fork of shadPS4: upstream v0.19.0 plus a short series of commits on `d1` that

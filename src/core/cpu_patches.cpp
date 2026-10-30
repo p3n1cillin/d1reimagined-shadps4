@@ -22,6 +22,8 @@
 #include "common/assert.h"
 #include "common/decoder.h"
 #include "common/signal_context.h"
+#include "common/logging/log.h"
+#include "common/memory_patcher.h"
 #include "common/types.h"
 #include "core/signals.h"
 #include "core/tls.h"
@@ -2229,6 +2231,113 @@ void PrePatchInstructions(u64 segment_addr, u64 segment_size) {
         TryPatchAot(reinterpret_cast<void*>(segment_addr), segment_size);
     }
 #endif
+}
+
+bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback callback) {
+    if (MemoryPatcher::g_eboot_address == 0) {
+        LOG_ERROR(Core, "D1 detour {:#x}: the main executable is not loaded", site_vaddr);
+        return false;
+    }
+    auto* site = reinterpret_cast<u8*>(MemoryPatcher::g_eboot_address + site_vaddr);
+    if (std::memcmp(site, span.data(), span.size()) != 0) {
+        LOG_ERROR(Core, "D1 detour {:#x}: the bytes there are not the pinned span; refusing",
+                  site_vaddr);
+        return false;
+    }
+    auto* module = GetContainingModule(site);
+    if (module == nullptr || module->trampoline_exhausted) {
+        LOG_ERROR(Core, "D1 detour {:#x}: no patch module or trampoline space", site_vaddr);
+        return false;
+    }
+    // Whole instructions covering the jump and the pinned span.
+    std::vector<DecodedCodeInstruction> instructions;
+    uintptr_t at = reinterpret_cast<uintptr_t>(site);
+    size_t size = 0;
+    while (size < std::max(NearJumpSize, span.size())) {
+        auto decoded = DecodeCodeInstruction(at, reinterpret_cast<uintptr_t>(module->end));
+        if (decoded.instruction.length == 0 || IsControlFlowTerminator(decoded.instruction)) {
+            LOG_ERROR(Core, "D1 detour {:#x}: cannot relocate the instruction at {:#x}",
+                      site_vaddr, at - MemoryPatcher::g_eboot_address);
+            return false;
+        }
+        size += decoded.instruction.length;
+        at += decoded.instruction.length;
+        instructions.push_back(decoded);
+    }
+
+    auto& g = module->trampoline_gen;
+    const size_t start = g.getSize();
+    try {
+        // Keep the guest's red zone intact, then save everything the callback may clobber.
+        g.lea(rsp, ptr[rsp - GuestRedZoneSize]);
+        g.push(rax);
+        g.push(rcx);
+        g.push(rdx);
+        g.push(rbx);
+        g.push(rbp);
+        g.push(rsi);
+        g.push(rdi);
+        g.push(r8);
+        g.push(r9);
+        g.push(r10);
+        g.push(r11);
+        g.push(r12);
+        g.push(r13);
+        g.push(r14);
+        g.push(r15);
+        g.pushfq();
+        g.mov(rdi, rsp); // D1DetourRegisters*
+        g.mov(rsi, site_vaddr);
+        g.mov(rbx, rsp); // callee-saved across the call
+        g.and_(rsp, -32);
+        g.sub(rsp, 16 * 32);
+        for (int i = 0; i < 16; ++i) {
+            g.vmovdqu(ptr[rsp + i * 32], Xbyak::Ymm(i));
+        }
+        g.mov(rax, reinterpret_cast<u64>(callback));
+        g.call(rax);
+        for (int i = 0; i < 16; ++i) {
+            g.vmovdqu(Xbyak::Ymm(i), ptr[rsp + i * 32]);
+        }
+        g.mov(rsp, rbx);
+        g.popfq();
+        g.pop(r15);
+        g.pop(r14);
+        g.pop(r13);
+        g.pop(r12);
+        g.pop(r11);
+        g.pop(r10);
+        g.pop(r9);
+        g.pop(r8);
+        g.pop(rdi);
+        g.pop(rsi);
+        g.pop(rbp);
+        g.pop(rbx);
+        g.pop(rdx);
+        g.pop(rcx);
+        g.pop(rax);
+        g.lea(rsp, ptr[rsp + GuestRedZoneSize]);
+        for (const auto& decoded : instructions) {
+            if (!EncodeRelocatedInstruction(decoded, g)) {
+                g.setSize(start);
+                LOG_ERROR(Core, "D1 detour {:#x}: relocation refused", site_vaddr);
+                return false;
+            }
+        }
+        g.jmp(reinterpret_cast<void*>(at));
+    } catch (const Xbyak::Error& error) {
+        g.setSize(start);
+        LOG_ERROR(Core, "D1 detour {:#x}: trampoline: {}", site_vaddr, error.what());
+        return false;
+    }
+    const auto* trampoline = g.getCode() + start;
+    auto& patch = module->patch_gen;
+    patch.reset();
+    patch.setSize(reinterpret_cast<uintptr_t>(site) - reinterpret_cast<uintptr_t>(patch.getCode()));
+    patch.jmp(trampoline, Xbyak::CodeGenerator::LabelType::T_NEAR);
+    patch.nop(size - NearJumpSize);
+    LOG_INFO(Core, "D1 detour installed at {:#x} ({} bytes relocated)", site_vaddr, size);
+    return true;
 }
 
 } // namespace Core

@@ -13,6 +13,7 @@
 #include "common/path_util.h"
 #include "core/emulator_state.h"
 #include "core/file_format/psf.h"
+#include "core/d1_native_mouse.h"
 #include "memory_patcher.h"
 
 namespace MemoryPatcher {
@@ -273,6 +274,7 @@ void OnGameLoaded() {
         }
     }
     ApplyPendingPatches();
+    Core::D1NativeMouse::Install();
 }
 
 void AddPatchToQueue(const patchInfo& patchToAdd) {

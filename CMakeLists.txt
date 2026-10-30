@@ -970,6 +970,8 @@ set(CORE src/core/aerolib/stubs.cpp
 if (ARCHITECTURE STREQUAL "x86_64")
     set(CORE ${CORE}
              src/core/cpu_patches.cpp
+             src/core/d1_native_mouse.cpp
+             src/core/d1_native_mouse.h
              src/core/cpu_patches.h
              ${FIBER_LIB})
 endif()

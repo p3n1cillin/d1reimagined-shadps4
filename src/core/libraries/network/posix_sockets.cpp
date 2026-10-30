@@ -259,7 +259,11 @@ int PosixSocket::SendMessage(const OrbisNetMsghdr* msg, int flags) {
                                    : ::send(sock, gathered.data() + totalSent, len, 0);
         if (sent == SOCKET_ERROR)
             return totalSent > 0 ? static_cast<int>(totalSent)
-                                 : ConvertReturnErrorCode(SOCKET_ERROR) /* maps WSAGetLastError() itself; passing the positive WSA code returned it as a byte count (CHICKEN/CENTIPEDE) */;
+                                 : ConvertReturnErrorCode(
+                                       SOCKET_ERROR) /* maps WSAGetLastError() itself; passing the
+                                                        positive WSA code returned it as a byte
+                                                        count (CHICKEN/CENTIPEDE) */
+                ;
         totalSent += static_cast<size_t>(sent);
     } while (waitAll && totalSent < gathered.size());
 
@@ -321,7 +325,10 @@ int PosixSocket::ReceiveMessage(OrbisNetMsghdr* msg, int flags) {
         if (received == SOCKET_ERROR) {
             if (totalReceived > 0)
                 break;
-            return ConvertReturnErrorCode(SOCKET_ERROR) /* maps WSAGetLastError() itself; passing the positive WSA code returned it as a byte count (CHICKEN/CENTIPEDE) */;
+            return ConvertReturnErrorCode(
+                SOCKET_ERROR) /* maps WSAGetLastError() itself; passing the positive WSA code
+                                 returned it as a byte count (CHICKEN/CENTIPEDE) */
+                ;
         }
         if (received == 0)
             break; // orderly shutdown

@@ -31,11 +31,11 @@ typedef int net_socket;
 #include <sstream>
 #endif
 
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <vector>
-#include <cstdlib>
 #include <string.h>
 #include "common/assert.h"
 #include "common/logging/log.h"

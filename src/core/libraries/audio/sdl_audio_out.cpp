@@ -8,8 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <string>
 #include <memory>
+#include <string>
 #include <thread>
 #include <SDL3/SDL_audio.h>
 #include <SDL3/SDL_hints.h>

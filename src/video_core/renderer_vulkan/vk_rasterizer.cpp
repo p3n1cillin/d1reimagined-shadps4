@@ -1,11 +1,12 @@
-#include <string>
-#include <filesystem>
-#include <cstdio>
-#include <chrono>
-#include <cstdlib>
-#include <unordered_set>
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <string>
+#include <unordered_set>
 
 #include "common/debug.h"
 #include "core/debug_state.h"
@@ -104,16 +105,16 @@ void D1DumpTexture(Runtime& runtime, Scheduler& scheduler, VideoCore::Image& ima
     if (bpp == 0 || size == 0 || size > (64ull << 20)) {
         return;
     }
-    const auto dl = runtime.GetStagingPool().Request(size, VideoCore::MemoryType::HostCached, 16,
-                                                     true);
+    const auto dl =
+        runtime.GetStagingPool().Request(size, VideoCore::MemoryType::HostCached, 16, true);
     const vk::BufferImageCopy copy = {
         .bufferOffset = dl.offset,
         .bufferRowLength = 0,
         .bufferImageHeight = 0,
         .imageSubresource =
             {
-                .aspectMask = depth ? vk::ImageAspectFlagBits::eDepth
-                                    : vk::ImageAspectFlagBits::eColor,
+                .aspectMask =
+                    depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor,
                 .mipLevel = 0,
                 .baseArrayLayer = 0,
                 .layerCount = 1,
@@ -997,13 +998,12 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                             "D1TEX sh {:#018x} st {} @ {:#x} type {} {}x{}x{} fmt {}/{} tile {} "
                             "mips {}-{} arr {}-{} sel {}{}{}{} pitch {}",
                             stage.pgm_hash, static_cast<u32>(stage.sw_stage), tsharp.Address(),
-                            static_cast<u32>(tsharp.GetType()), tsharp.width + 1,
-                            tsharp.height + 1, tsharp.depth + 1, u32(tsharp.data_format),
-                            u32(tsharp.num_format), u32(tsharp.tiling_index),
-                            u32(tsharp.base_level), u32(tsharp.last_level),
-                            u32(tsharp.base_array), u32(tsharp.last_array), u32(tsharp.dst_sel_x),
-                            u32(tsharp.dst_sel_y), u32(tsharp.dst_sel_z), u32(tsharp.dst_sel_w),
-                            tsharp.pitch + 1);
+                            static_cast<u32>(tsharp.GetType()), tsharp.width + 1, tsharp.height + 1,
+                            tsharp.depth + 1, u32(tsharp.data_format), u32(tsharp.num_format),
+                            u32(tsharp.tiling_index), u32(tsharp.base_level),
+                            u32(tsharp.last_level), u32(tsharp.base_array), u32(tsharp.last_array),
+                            u32(tsharp.dst_sel_x), u32(tsharp.dst_sel_y), u32(tsharp.dst_sel_z),
+                            u32(tsharp.dst_sel_w), tsharp.pitch + 1);
             }
         }
 
@@ -1235,14 +1235,13 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         image->usage.render_target = 1u;
         if (D1DumpActive()) {
             const auto* fs = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
-            D1DumpEvent(fmt::format("RT {:016x} cb{} {:x} {}x{} slices {}-{} gsize {:#x} {} wm{} blend{} clear{}",
-                                    fs ? fs->pgm_hash : 0, cb, image->info.guest_address,
-                                    image->info.size.width, image->info.size.height,
-                                    u32(col_buf.view.slice_start), u32(col_buf.view.slice_max),
-                                    image->info.guest_size,
-                                    vk::to_string(image->info.pixel_format),
-                                    u32(static_cast<VkColorComponentFlags>(key.write_masks[cb])),
-                                    u32(key.blend_controls[cb].enable), is_clear));
+            D1DumpEvent(fmt::format(
+                "RT {:016x} cb{} {:x} {}x{} slices {}-{} gsize {:#x} {} wm{} blend{} clear{}",
+                fs ? fs->pgm_hash : 0, cb, image->info.guest_address, image->info.size.width,
+                image->info.size.height, u32(col_buf.view.slice_start), u32(col_buf.view.slice_max),
+                image->info.guest_size, vk::to_string(image->info.pixel_format),
+                u32(static_cast<VkColorComponentFlags>(key.write_masks[cb])),
+                u32(key.blend_controls[cb].enable), is_clear));
         }
 
         // D1_TEX_SURVEY=1 also lists which render targets each pixel shader writes.

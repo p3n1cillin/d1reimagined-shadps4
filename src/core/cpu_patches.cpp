@@ -2154,8 +2154,8 @@ static bool PatchesAccessViolationHandler(void* context, void* fault_address) {
         LOG_CRITICAL(Core,
                      "D1: guest executed an unreadable address rip={} fault={} rsp={:#x} "
                      "rax={:#x} rcx={:#x} rdx={:#x} rdi={:#x} rsi={:#x} stack:{}",
-                     rip, fault_address, ctx->Rsp, ctx->Rax, ctx->Rcx, ctx->Rdx, ctx->Rdi,
-                     ctx->Rsi, stack);
+                     rip, fault_address, ctx->Rsp, ctx->Rax, ctx->Rcx, ctx->Rdx, ctx->Rdi, ctx->Rsi,
+                     stack);
         return false;
     }
 #endif

@@ -340,7 +340,8 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         // D1-PRESERVATION FORK-LOCAL CHANGE: the same address reused for an image of a different
         // TYPE with a larger footprint (Destiny 56578 loading pvp_moonbase: same format, tile mode
-        // and resources, 16x the size). Treat it like the tile-mode reuse above instead of aborting.
+        // and resources, 16x the size). Treat it like the tile-mode reuse above instead of
+        // aborting.
         if (image_info.type != cache_image.info.type) {
             if (safe_to_delete) {
                 FreeImage(cache_image_id);
@@ -543,10 +544,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         return v ? static_cast<VAddr>(std::strtoull(v, nullptr, 16)) : VAddr{0};
     }();
     static u32 d1_traced = 0;
-    if (d1_trace && info.guest_address == d1_trace && g_d1_dump_live.load() &&
-        d1_traced < 3000) {
+    if (d1_trace && info.guest_address == d1_trace && g_d1_dump_live.load() && d1_traced < 3000) {
         ++d1_traced;
-        LOG_WARNING(Render_Vulkan, "D1 trace {:#x}: type {} {}x{}x{} L{} bind {} view base {} n {} size {:#x}",
+        LOG_WARNING(Render_Vulkan,
+                    "D1 trace {:#x}: type {} {}x{}x{} L{} bind {} view base {} n {} size {:#x}",
                     info.guest_address, static_cast<u32>(info.type), info.size.width,
                     info.size.height, info.size.depth, info.resources.layers,
                     static_cast<u32>(desc.type), desc.view_info.range.base.layer,
@@ -681,7 +682,8 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             // D1_VOLUME_SLICES=1 enables it (default 3, see above; 0 = upstream behaviour).
             // D1_VOLUME_SLICES=2: the render target only ALIASES the volume's memory (measured on
             // Destiny 56578: always a 32x32 2-layer target writing slice 1 at the colour-grading
-            // LUT's address, a pooled allocation). Keep the volume and give the target its own image.
+            // LUT's address, a pooled allocation). Keep the volume and give the target its own
+            // image.
             static const int volume_mode = [] {
                 const char* v = std::getenv("D1_VOLUME_SLICES");
                 return v ? v[0] - '0' : 3;
@@ -725,22 +727,21 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
                 static u32 logged = 0;
                 if (logged < 200) {
                     ++logged;
-                    LOG_WARNING(Render_Vulkan,
-                                "Image overlap resolve failed: cached type {} fmt {} {}x{}x{} L{} M{}"
-                                " vol {} -> wanted type {} fmt {} {}x{}x{} L{} M{} bind {} view "
-                                "base {} n {} @ {:#x}",
-                                static_cast<u32>(image_resolved.info.type),
-                                static_cast<u32>(image_resolved.info.pixel_format),
-                                image_resolved.info.size.width, image_resolved.info.size.height,
-                                image_resolved.info.size.depth,
-                                image_resolved.info.resources.layers,
-                                image_resolved.info.resources.levels,
-                                image_resolved.info.props.is_volume ? 1 : 0,
-                                static_cast<u32>(info.type), static_cast<u32>(info.pixel_format),
-                                info.size.width, info.size.height, info.size.depth,
-                                info.resources.layers, info.resources.levels,
-                                static_cast<u32>(desc.type), vr.base.layer, vr.extent.layers,
-                                info.guest_address);
+                    LOG_WARNING(
+                        Render_Vulkan,
+                        "Image overlap resolve failed: cached type {} fmt {} {}x{}x{} L{} M{}"
+                        " vol {} -> wanted type {} fmt {} {}x{}x{} L{} M{} bind {} view "
+                        "base {} n {} @ {:#x}",
+                        static_cast<u32>(image_resolved.info.type),
+                        static_cast<u32>(image_resolved.info.pixel_format),
+                        image_resolved.info.size.width, image_resolved.info.size.height,
+                        image_resolved.info.size.depth, image_resolved.info.resources.layers,
+                        image_resolved.info.resources.levels,
+                        image_resolved.info.props.is_volume ? 1 : 0, static_cast<u32>(info.type),
+                        static_cast<u32>(info.pixel_format), info.size.width, info.size.height,
+                        info.size.depth, info.resources.layers, info.resources.levels,
+                        static_cast<u32>(desc.type), vr.base.layer, vr.extent.layers,
+                        info.guest_address);
                 }
                 FreeImage(image_id);
                 image_id = {};

@@ -77,6 +77,8 @@ All are off unless set. None of them changes behaviour that upstream games rely 
 | `D1_GUEST_IP=a.b.c.d` | The guest's own IP address. Used only if it belongs to this machine; otherwise a UDP route probe picks it (nothing is sent). |
 | `D1_VOLUME_SLICES=0..3` | How a render target over the colour-grading LUT is handled. Default 3 (a fresh 2D image, the fix); 1 and 2 are earlier experiments; 0 is upstream's handling of that case. The other LUT fixes (expanding, extending the predecessor) are always on. |
 | `D1_AUDIO_TAP=DIR` | While `DIR/rec.flag` exists, every audio port writes its float samples to `DIR/port<N>-<rate>-<channels>-<unix ms>.f32`. The project's `tools/ps4_setup/d1-record.py` creates the flag, captures the window and muxes the clip. |
+| `D1_MOUSE_PROBE=1` | Detours the menu cursor update (56578, 0x985D00) and logs the UI root and cursor position at the first hits; changes nothing. Proves the detour framework (`InstallD1Detour`). |
+| `D1_MOUSE_CURSOR=1` | The menu cursor follows the host mouse while the game window has focus (Windows). `D1_MOUSE_SENS` scales it (default 1, the engine's own unscaled rate). |
 | `D1_FLIP_RATE=N` | Replaces the flip rate the title requests (Destiny asks for 1: every second vblank, 30 Hz). `0` flips on every vblank, for the 60 Hz engine-clock patch. Unset keeps the title's rate. |
 | `D1_DUMP_DIR=DIR` | Creating `DIR.flag` dumps every texture sampled in the next ~0.2 s (raw, linear, in draw order) plus `events.txt`. |
 | `D1_TEX_SURVEY=1` | Logs each shader's distinct texture shapes and the render targets each pixel shader writes, once. |

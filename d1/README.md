@@ -107,7 +107,17 @@ The rest of the environment lives in
 
 ## Contributing
 
-Base changes on `d1`. Keep each fix one commit, with a message that states what you saw in the game
-before and after, and mark fork-local code with a `D1` comment so it stays easy to find when
-rebasing onto a newer upstream. Fixes that are not Destiny-specific are better sent to
-[upstream shadPS4](https://github.com/shadps4-emu/shadPS4) as well.
+1. Fork, branch from `d1`, and make one fix per pull request. Mark fork-local code with a `D1` comment
+   so it stays easy to find when rebasing onto a newer upstream. Put behaviour that could affect other
+   games behind a `D1_*` variable, and add it to the table above.
+2. Build it (above) and check the fix in the game: say what you saw before and after, in which scene,
+   on which GPU and OS. The pull request template asks for exactly that.
+3. CI builds every pull request on Windows, Linux and macOS and checks `clang-format`. A maintainer
+   reviews it; merges are squashed, so the `d1` series stays one commit per fix.
+
+Rendering, stability and performance problems that also happen on upstream shadPS4 belong
+[upstream](https://github.com/shadps4-emu/shadPS4), and fixes that aren't Destiny-specific are worth
+sending there too, following its [CONTRIBUTING.md](../CONTRIBUTING.md) (including its A.I. rules).
+Project-wide tasks and research live in
+[d1reimagined-source](https://github.com/p3n1cillin/d1reimagined-source/issues). Working with an AI
+agent? Point it at [AGENTS.md](../AGENTS.md).

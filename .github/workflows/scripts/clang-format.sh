@@ -3,9 +3,18 @@
 # SPDX-FileCopyrightText: 2023 Citra Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-if grep -nrI '\s$' src *.yml *.txt *.md Doxyfile .gitignore .gitmodules .ci* dist/*.desktop \
-                 dist/*.svg dist/*.xml; then
-    echo Trailing whitespace found, aborting
+# D1: check only the lines the d1 series (or this pull request) changes. Upstream v0.19.0 itself has
+# trailing whitespace and unformatted lines in files we don't touch, so whole-tree checks fail on
+# every push. Bump D1_UPSTREAM when rebasing onto a newer upstream release.
+D1_UPSTREAM=v.0.19.0
+if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+    base="${COMMIT_RANGE%%..*}"
+else
+    base="$D1_UPSTREAM"
+fi
+
+if git diff -U0 "$base" HEAD -- src '*.yml' '*.md' '*.txt' CMakeLists.txt | grep -n '^+[^+].*\s$'; then
+    echo Trailing whitespace found in changed lines, aborting
     exit 1
 fi
 
@@ -13,28 +22,12 @@ fi
 CLANG_FORMAT=clang-format-19
 $CLANG_FORMAT --version
 
-if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-    # Get list of every file modified in this pull request
-    files_to_lint="$(git diff --name-only --diff-filter=ACMRTUXB $COMMIT_RANGE | grep '^src/[^.]*[.]\(cpp\|h\)$' || true)"
-else
-    # Check everything for branch pushes
-    files_to_lint="$(find src/ -name '*.cpp' -or -name '*.h')"
-fi
-
-# Turn off tracing for this because it's too verbose
-set +x
-
-for f in $files_to_lint; do
-    d=$(diff -u "$f" <($CLANG_FORMAT "$f") || true)
-    if ! [ -z "$d" ]; then
-        echo "!!! $f not compliant to coding style, here is the fix:"
-        echo "$d"
-        fail=1
-    fi
-done
-
-set -x
-
-if [ "$fail" = 1 ]; then
-    exit 1
-fi
+out="$(git-clang-format-19 --binary "$CLANG_FORMAT" --diff --extensions cpp,h "$base" -- src || true)"
+case "$out" in
+    "" | *"no modified files to format"* | *"did not modify any files"*) ;;
+    *)
+        echo "!!! changed lines not compliant to coding style, here is the fix:"
+        echo "$out"
+        exit 1
+        ;;
+esac

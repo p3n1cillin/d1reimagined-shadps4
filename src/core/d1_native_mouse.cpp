@@ -30,6 +30,12 @@ namespace {
 constexpr u64 CursorSite = 0x985D00;
 constexpr std::array<u8, 7> CursorSpan = {0x41, 0x8B, 0x9F, 0x10, 0x02, 0x00, 0x00};
 std::atomic<int> g_probe_hits{0};
+float g_sensitivity = 1.0f;
+
+bool EnvOn(const char* name) {
+    const char* v = std::getenv(name);
+    return v != nullptr && *v != '\0' && *v != '0';
+}
 
 void PS4_SYSV_ABI ProbeCursor(D1DetourRegisters* regs, u64 site) {
     const int n = g_probe_hits.fetch_add(1);
@@ -42,14 +48,56 @@ void PS4_SYSV_ABI ProbeCursor(D1DetourRegisters* regs, u64 site) {
              n + 1, regs->r15, xy[0], xy[1]);
 }
 
+#ifdef _WIN32
+bool GameHasFocus() {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    return pid == GetCurrentProcessId();
+}
+
+void PS4_SYSV_ABI MoveCursor(D1DetourRegisters* regs, u64) {
+    static POINT last{};
+    static bool have_last = false;
+    POINT now{};
+    if (!GetCursorPos(&now)) {
+        return;
+    }
+    if (have_last && GameHasFocus()) {
+        const float dx = static_cast<float>(now.x - last.x) * g_sensitivity;
+        const float dy = static_cast<float>(now.y - last.y) * g_sensitivity;
+        if (dx != 0.0f || dy != 0.0f) {
+            float xy[2];
+            std::memcpy(xy, reinterpret_cast<const void*>(regs->r15 + 0x350), sizeof(xy));
+            xy[0] += dx;
+            xy[1] += dy;
+            std::memcpy(reinterpret_cast<void*>(regs->r15 + 0x350), xy, sizeof(xy));
+        }
+    }
+    last = now;
+    have_last = true;
+}
+#endif
+
 } // namespace
 
 void Install() {
-    const char* probe = std::getenv("D1_MOUSE_PROBE");
-    if (probe == nullptr || *probe == '\0' || *probe == '0') {
+    if (const char* s = std::getenv("D1_MOUSE_SENS"); s != nullptr && *s != '\0') {
+        g_sensitivity = static_cast<float>(std::atof(s));
+    }
+    if (EnvOn("D1_MOUSE_CURSOR")) {
+#ifdef _WIN32
+        if (InstallD1Detour(CursorSite, CursorSpan, MoveCursor)) {
+            LOG_INFO(Input, "D1 mouse: the menu cursor follows the host mouse (sensitivity {})",
+                     g_sensitivity);
+        } else {
+            LOG_ERROR(Input, "D1 mouse: the cursor detour was refused");
+        }
+#else
+        LOG_ERROR(Input, "D1 mouse: D1_MOUSE_CURSOR is Windows-only for now");
+#endif
         return;
     }
-    if (!InstallD1Detour(CursorSite, CursorSpan, ProbeCursor)) {
+    if (EnvOn("D1_MOUSE_PROBE") && !InstallD1Detour(CursorSite, CursorSpan, ProbeCursor)) {
         LOG_ERROR(Input, "D1 mouse probe: the cursor detour was refused");
     }
 }

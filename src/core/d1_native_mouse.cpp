@@ -24,13 +24,21 @@
 //                      engine's order, to the key table that follows the mouse state at 0x1AD4860, and
 //                      the mouse-enable byte 0x1AD40D3 is set, so the engine reads the keyboard with its
 //                      own bindings. Mouse counts stay zero (look goes through D1_MOUSE_LOOK).
+//   D1_KBM_MAP=R=E,1=R  rebinds the layer: each HOST=ENGINE pair makes the host key press that engine
+//                      key instead of its own (names as in EngineKeyNames, any case). The engine's keys
+//                      are a developer layout (builder 0x926910): Space = cross, Q = circle, E = square
+//                      (reload / interact), R = triangle (weapon), T / G = d-pad up / down, End = L2,
+//                      Ins = R2, PgDn / PgUp = controls 6 / 7, Z = 8, B = R3, WASD move, arrows look.
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -85,6 +93,16 @@ constexpr std::array<u16, 104> EngineKeys = {
     VK_LEFT, VK_RIGHT, VK_INSERT, VK_HOME, VK_PRIOR, VK_DELETE, VK_END, VK_NEXT, VK_NUMLOCK, VK_DIVIDE,
     VK_MULTIPLY, VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6,
     VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9, VK_SUBTRACT, VK_ADD, VK_RETURN, VK_DECIMAL};
+constexpr std::array<const char*, 104> EngineKeyNames = {
+    "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "ScrLk",
+    "F15", "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Back", "Tab", "Q", "W",
+    "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "Caps", "A", "S", "D", "F", "G", "H", "J",
+    "K", "L", ";", "'", "Enter", "LShift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "RShift",
+    "LCtrl", "LWin", "LAlt", "Space", "RAlt", "RWin", "Apps", "RCtrl", "Up", "Down", "Left", "Right",
+    "Ins", "Home", "PgUp", "Del", "End", "PgDn", "NumLk", "Num/", "Num*", "Num0", "Num1", "Num2",
+    "Num3", "Num4", "Num5", "Num6", "Num7", "Num8", "Num9", "Num-", "Num+", "NumEnter", "Num."};
+// The host keys that press each engine key: itself, unless D1_KBM_MAP moves it.
+std::array<std::vector<u16>, 104> g_key_sources;
 
 bool EnvOn(const char* name) {
     const char* v = std::getenv(name);
@@ -256,7 +274,10 @@ void PS4_SYSV_ABI InjectKeys(D1DetourRegisters*, u64) {
     const u64 now = GetTickCount64();
     auto* keys = reinterpret_cast<u8*>(base + MouseState + 24);
     for (size_t i = 0; i < EngineKeys.size(); ++i) {
-        const bool down = focus && (GetAsyncKeyState(EngineKeys[i]) & 0x8000) != 0;
+        bool down = false;
+        for (const u16 vk : g_key_sources[i]) {
+            down = down || (focus && (GetAsyncKeyState(vk) & 0x8000) != 0);
+        }
         if (!down) {
             down_since[i] = 0;
             frames[i] = 0;
@@ -272,6 +293,58 @@ void PS4_SYSV_ABI InjectKeys(D1DetourRegisters*, u64) {
     }
     *reinterpret_cast<u8*>(base + MouseEnableByte) = focus ? 1 : 0;
 }
+
+int KeyIndex(const std::string& name) {
+    for (size_t i = 0; i < EngineKeyNames.size(); ++i) {
+        const std::string candidate = EngineKeyNames[i];
+        if (candidate.size() == name.size() &&
+            std::equal(candidate.begin(), candidate.end(), name.begin(), [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) ==
+                       std::tolower(static_cast<unsigned char>(b));
+            })) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+/// Each engine key starts pressed by its own host key; D1_KBM_MAP's HOST=ENGINE pairs move a host key.
+void LoadKeyMap() {
+    for (size_t i = 0; i < EngineKeys.size(); ++i) {
+        g_key_sources[i] = {EngineKeys[i]};
+    }
+    const char* map = std::getenv("D1_KBM_MAP");
+    if (map == nullptr || *map == '\0') {
+        return;
+    }
+    std::vector<std::pair<int, int>> pairs;
+    std::string text = map;
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t end = std::min(text.find(',', start), text.size());
+        const std::string item = text.substr(start, end - start);
+        // The engine name may itself be "=", so split at the first '=' after the host name.
+        const size_t eq = item.find('=', 1);
+        const int host = eq == std::string::npos ? -1 : KeyIndex(item.substr(0, eq));
+        const int engine = eq == std::string::npos ? -1 : KeyIndex(item.substr(eq + 1));
+        if (host < 0 || engine < 0) {
+            LOG_ERROR(Input, "D1 KBM: ignoring map entry '{}' (HOST=ENGINE key names)", item);
+        } else {
+            pairs.emplace_back(host, engine);
+        }
+        start = end + 1;
+    }
+    for (const auto& [host, engine] : pairs) {
+        for (auto& sources : g_key_sources) {
+            std::erase(sources, EngineKeys[host]);
+        }
+    }
+    for (const auto& [host, engine] : pairs) {
+        g_key_sources[engine].push_back(EngineKeys[host]);
+        LOG_INFO(Input, "D1 KBM: host {} presses engine {}", EngineKeyNames[host],
+                 EngineKeyNames[engine]);
+    }
+}
 #endif
 
 } // namespace
@@ -282,6 +355,7 @@ void Install() {
     }
     if (EnvOn("D1_KBM")) {
 #ifdef _WIN32
+        LoadKeyMap();
         if (InstallD1Detour(KbmSite, KbmSpan, InjectKeys)) {
             LOG_INFO(Input, "D1 KBM: the engine's own keyboard layer is fed and enabled");
         } else {

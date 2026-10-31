@@ -19,6 +19,11 @@
 //   D1_MOUSE_BUTTONS=1 mouse buttons merged into player 0's controls after pad selection (0x9284EF,
 //                      01.29 0x92684F): in menus LMB = cross, RMB = circle; in gameplay LMB = R2
 //                      (fire), RMB = L2 (aim), middle = R3 (melee), Mouse4 = square, Mouse5 = circle.
+//   D1_KBM=1           the engine's own PC keyboard layer: at the KBM builder entry 0x926965 (01.29
+//                      0x924CC5, right after 0xAD120 clears the blocks) the 104 keys are written, in the
+//                      engine's order, to the key table that follows the mouse state at 0x1AD4860, and
+//                      the mouse-enable byte 0x1AD40D3 is set, so the engine reads the keyboard with its
+//                      own bindings. Mouse counts stay zero (look goes through D1_MOUSE_LOOK).
 
 #include <algorithm>
 #include <array>
@@ -63,6 +68,23 @@ struct Key {
     u16 held_ms{};
     u8 frames{};
 };
+
+constexpr u64 KbmSite = 0x926965;
+constexpr std::array<u8, 7> KbmSpan = {0x48, 0x8D, 0x05, 0xD4, 0x83, 0xE1, 0x01}; // lea rax,[0x273ED40]
+constexpr u64 MouseState = 0x1AD4860; // 24-byte mouse block, then 104 x {u16 held_ms, u8 frames, u8 flags}
+constexpr u64 MouseEnableByte = 0x1AD40D3;
+// The engine's key order (Xbox 56578's table; 01.29's queries agree: WASD = 0x20/0x2D/0x2E/0x2F,
+// arrows 0x4D..0x50, space 0x48), as Windows virtual keys.
+constexpr std::array<u16, 104> EngineKeys = {
+    VK_ESCAPE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
+    VK_F13, VK_SCROLL, VK_F15, VK_OEM_3, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', VK_OEM_MINUS,
+    VK_OEM_PLUS, VK_BACK, VK_TAB, 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', VK_OEM_4, VK_OEM_6,
+    VK_OEM_5, VK_CAPITAL, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', VK_OEM_1, VK_OEM_7, VK_RETURN,
+    VK_LSHIFT, 'Z', 'X', 'C', 'V', 'B', 'N', 'M', VK_OEM_COMMA, VK_OEM_PERIOD, VK_OEM_2, VK_RSHIFT,
+    VK_LCONTROL, VK_LWIN, VK_LMENU, VK_SPACE, VK_RMENU, VK_RWIN, VK_APPS, VK_RCONTROL, VK_UP, VK_DOWN,
+    VK_LEFT, VK_RIGHT, VK_INSERT, VK_HOME, VK_PRIOR, VK_DELETE, VK_END, VK_NEXT, VK_NUMLOCK, VK_DIVIDE,
+    VK_MULTIPLY, VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6,
+    VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9, VK_SUBTRACT, VK_ADD, VK_RETURN, VK_DECIMAL};
 
 bool EnvOn(const char* name) {
     const char* v = std::getenv(name);
@@ -225,6 +247,31 @@ void PS4_SYSV_ABI MergeButtons(D1DetourRegisters*, u64) {
         previous[i] = merged;
     }
 }
+/// The engine's KBM layer: write the 104 keys after the builder cleared them, and enable the layer.
+void PS4_SYSV_ABI InjectKeys(D1DetourRegisters*, u64) {
+    static std::array<u64, 104> down_since{};
+    static std::array<u8, 104> frames{};
+    const u64 base = MemoryPatcher::g_eboot_address;
+    const bool focus = GameHasFocus();
+    const u64 now = GetTickCount64();
+    auto* keys = reinterpret_cast<u8*>(base + MouseState + 24);
+    for (size_t i = 0; i < EngineKeys.size(); ++i) {
+        const bool down = focus && (GetAsyncKeyState(EngineKeys[i]) & 0x8000) != 0;
+        if (!down) {
+            down_since[i] = 0;
+            frames[i] = 0;
+        } else {
+            if (down_since[i] == 0) {
+                down_since[i] = now;
+            }
+            frames[i] = static_cast<u8>(std::min(255, frames[i] + 1));
+        }
+        const u16 held = down ? static_cast<u16>(std::min<u64>(0xFFFF, now - down_since[i])) : 0;
+        std::memcpy(keys + i * 4, &held, 2);
+        keys[i * 4 + 2] = frames[i];
+    }
+    *reinterpret_cast<u8*>(base + MouseEnableByte) = focus ? 1 : 0;
+}
 #endif
 
 } // namespace
@@ -232,6 +279,15 @@ void PS4_SYSV_ABI MergeButtons(D1DetourRegisters*, u64) {
 void Install() {
     if (const char* s = std::getenv("D1_MOUSE_SENS"); s != nullptr && *s != '\0') {
         g_sensitivity = static_cast<float>(std::atof(s));
+    }
+    if (EnvOn("D1_KBM")) {
+#ifdef _WIN32
+        if (InstallD1Detour(KbmSite, KbmSpan, InjectKeys)) {
+            LOG_INFO(Input, "D1 KBM: the engine's own keyboard layer is fed and enabled");
+        } else {
+            LOG_ERROR(Input, "D1 KBM: the builder detour was refused");
+        }
+#endif
     }
     if (EnvOn("D1_MOUSE_CURSOR") || EnvOn("D1_MOUSE_LOOK") || EnvOn("D1_MOUSE_BUTTONS")) {
 #ifdef _WIN32

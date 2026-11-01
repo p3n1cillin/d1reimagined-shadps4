@@ -112,6 +112,15 @@ The rest of the environment lives in
 - **Keys of any kind.** None are needed beyond what your own dump contains, and none are accepted
   in contributions.
 
+## Credits
+
+Everything outside the `d1` commits is the work of the [shadPS4 Emulator Project](https://github.com/shadps4-emu/shadPS4)
+and its contributors, including shadNet, its PSN replacement, which grew out of the rpcsn Project's
+RPCN. This build only adds the Destiny-specific fixes listed above. The services and research it
+runs against build on aknumbers' [Destiny 1 Preservation Project](https://gitlab.com/aknumbers).
+Everyone whose work D1 Reimagined uses is named in
+[CREDITS.md](https://github.com/p3n1cillin/d1reimagined-source/blob/main/CREDITS.md).
+
 ## Contributing
 
 1. Fork, branch from `d1`, and make one fix per pull request. Mark fork-local code with a `D1` comment

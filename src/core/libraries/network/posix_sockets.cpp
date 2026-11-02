@@ -45,6 +45,14 @@ std::unordered_map<u64, NetDiag> g_net_diag;
 void NetDiagNote(net_socket s, bool received, int res) {
     if (!NetDiagOn())
         return;
+#ifdef _WIN32
+    // Callers read WSAGetLastError() after this: keep it. Without this the first build turned a
+    // non-blocking WSAEWOULDBLOCK into another error and the BAP sign-in failed (sense131).
+    struct KeepError {
+        int saved = WSAGetLastError();
+        ~KeepError() { WSASetLastError(saved); }
+    } keep_error;
+#endif
     std::scoped_lock lk{g_net_diag_mutex};
     auto& d = g_net_diag[static_cast<u64>(s)];
     const auto now = std::chrono::steady_clock::now();

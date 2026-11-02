@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <mutex>
+#include <unordered_map>
 #include <cstring>
 #include <vector>
 #include <common/assert.h>
@@ -16,6 +20,62 @@
 #include "sockets.h"
 
 namespace Libraries::Net {
+
+// D1_NET_DIAG=1: every 2 s, per socket, what the guest did with it - receive calls, bytes, calls that
+// found nothing, sends - and how many bytes Windows holds unread for it. A client that stops calling
+// receive while it keeps sending shows as sends with no receives and a growing "waiting"; one that
+// calls but is handed nothing shows as empty receives with bytes waiting. (Run sense130, 2 Nov:
+// the client stopped reading the activity-host socket for 20 s in the Breach waves, kept sending,
+// and dropped the session.)
+namespace {
+struct NetDiag {
+    u64 recv_calls = 0, recv_bytes = 0, recv_empty = 0, send_calls = 0, send_bytes = 0;
+    std::chrono::steady_clock::time_point since{};
+};
+bool NetDiagOn() {
+    static const bool on = [] {
+        const char* v = std::getenv("D1_NET_DIAG");
+        return v && *v == '1';
+    }();
+    return on;
+}
+std::mutex g_net_diag_mutex;
+std::unordered_map<u64, NetDiag> g_net_diag;
+
+void NetDiagNote(net_socket s, bool received, int res) {
+    if (!NetDiagOn())
+        return;
+    std::scoped_lock lk{g_net_diag_mutex};
+    auto& d = g_net_diag[static_cast<u64>(s)];
+    const auto now = std::chrono::steady_clock::now();
+    if (d.since == std::chrono::steady_clock::time_point{})
+        d.since = now;
+    if (received) {
+        ++d.recv_calls;
+        if (res > 0)
+            d.recv_bytes += static_cast<u64>(res);
+        else
+            ++d.recv_empty;
+    } else {
+        ++d.send_calls;
+        if (res > 0)
+            d.send_bytes += static_cast<u64>(res);
+    }
+    if (now - d.since < std::chrono::seconds(2))
+        return;
+    unsigned long waiting = 0;
+#ifdef _WIN32
+    ioctlsocket(s, FIONREAD, &waiting);
+#endif
+    LOG_INFO(Lib_Net,
+             "D1_NET_DIAG sock {}: {} ms: recv {} calls {} B {} empty; send {} calls {} B; waiting {} B",
+             static_cast<u64>(s),
+             std::chrono::duration_cast<std::chrono::milliseconds>(now - d.since).count(),
+             d.recv_calls, d.recv_bytes, d.recv_empty, d.send_calls, d.send_bytes, waiting);
+    d = NetDiag{};
+    d.since = now;
+}
+} // namespace
 
 #ifdef _WIN32
 #define ERROR_CASE(errname)                                                                        \
@@ -267,6 +327,7 @@ int PosixSocket::SendMessage(const OrbisNetMsghdr* msg, int flags) {
         totalSent += static_cast<size_t>(sent);
     } while (waitAll && totalSent < gathered.size());
 
+    NetDiagNote(sock, false, static_cast<int>(totalSent));
     return static_cast<int>(totalSent);
 
 #else
@@ -295,6 +356,7 @@ int PosixSocket::SendPacket(const void* msg, u32 len, int flags, const OrbisNetS
         convertOrbisNetSockaddrToPosix(to, &addr);
         res = sendto(sock, (const char*)msg, len, posix_flags, &addr, tolen);
     }
+    NetDiagNote(sock, false, res);
     return ConvertReturnErrorCode(res);
 }
 
@@ -317,11 +379,13 @@ int PosixSocket::ReceiveMessage(OrbisNetMsghdr* msg, int flags) {
             if (ready <= 0) {
                 if (totalReceived > 0)
                     break;
+                NetDiagNote(sock, true, 0);
                 return ready; // ORBIS_NET_ERROR_EWOULDBLOCK or error
             }
         }
         const int received = ::recv(sock, buffer.data() + totalReceived,
                                     static_cast<int>(capacity - totalReceived), 0);
+        NetDiagNote(sock, true, received == SOCKET_ERROR ? 0 : received);
         if (received == SOCKET_ERROR) {
             if (totalReceived > 0)
                 break;
@@ -364,6 +428,7 @@ int PosixSocket::ReceivePacket(void* buf, u32 len, int flags, OrbisNetSockaddr* 
     const auto posix_flags = convertOrbisFlagsToPosix(socket_type, flags);
     if (from == nullptr) {
         res = recv(sock, (char*)buf, len, posix_flags);
+        NetDiagNote(sock, true, res);
     } else {
         sockaddr addr{};
         socklen_t addrlen = sizeof(addr);

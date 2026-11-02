@@ -240,6 +240,7 @@ void VideoOutDriver::Flip(const Request& req) {
 
     // Present the frame.
     presenter->Present(req.frame);
+    Core::D1FrameRate::NoteFlip();
 
     // Update flip status.
     auto* port = req.port;

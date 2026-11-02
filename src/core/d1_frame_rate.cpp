@@ -8,13 +8,14 @@
 //   the cadence table [0x26BCD08]: +0x08 the present period in us (1001000/N), +0x38 the rate N,
 //                                  +0x40 the tick step in us (1000000/N), which the scheduler ticks on;
 //   the engine clock  [0x26BC880]: +0x08 the tick period in s (1/N), +0x0C the tick count.
-// Written live they switch the rate with no restart. The engine takes at most two ticks a frame,
-// so game time is real only while the screen holds N/2 FPS; past that the game slows down. The
-// guard lowers the rate to what the engine achieves (never below 60, which needs 30 FPS) and
+// Written live they switch the rate with no restart. Each tick costs CPU, and the engine simulates
+// only so many a second (in the mission on the lab PC about 70; in orbit nearly 1000): past that the
+// game slows down. The guard lowers the rate to what the engine achieves (never below 60) and
 // raises it back toward the setting after a stretch of real time. The presenter's vblank runs at the
 // target rate while D1_FPS is set (500 Hz uncapped), so the vblank never holds the rate back.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -34,6 +35,7 @@ constexpr u32 Uncapped = 1000;
 constexpr u32 Floor = 60;
 
 int g_setting = -1; // -1: off
+std::atomic<u64> g_flips{0};
 
 template <typename T>
 T Read(uintptr_t addr) {
@@ -66,10 +68,12 @@ void Hold() {
         table = Pointer(CadencePtr);
         clock = Pointer(ClockPtr);
     }
-    u32 rate = target;
+    u32 rate = g_setting == 0 ? Floor : target; // uncapped climbs from 60
     Apply(table, clock, rate);
     LOG_INFO(Lib_VideoOut, "D1_FPS: holding {} (setting {})", rate, g_setting);
     u32 last_ticks = Read<u32>(clock + 0x0C);
+    u64 last_flips = g_flips.load();
+    int follow = 0;
     auto last = std::chrono::steady_clock::now();
     int slow = 0, real = 0;
     // The lowest rate that ran slow lately: climbing stops 10 below it, until it lapses (5 min), as a
@@ -89,6 +93,9 @@ void Hold() {
         // Game time per second: the ticks taken times each tick's length. 1.0 is real time.
         const double achieved = (ticks - last_ticks) / seconds;
         const double game = achieved * Read<float>(clock + 0x08);
+        const u64 flips = g_flips.load();
+        const double fps = (flips - last_flips) / seconds;
+        last_flips = flips;
         last_ticks = ticks;
         last = now;
         // A loading transition may set the clock up again: put the rate back.
@@ -102,6 +109,24 @@ void Hold() {
             continue;
         }
         // 0.97: at 0.9 the guard let a rate of 90 run at 0.95x real time (fps-g-guard).
+        // Uncapped: one tick per presented frame, as PC games mean it, not as many ticks as the CPU
+        // can run (in orbit 990 ticks a second for 192 frames). Every 5 s: presentation at the
+        // rate's cap probes 20% higher; a screen below 80% of the rate brings the rate down to it.
+        if (g_setting == 0 && ++follow >= 5) {
+            follow = 0;
+            u32 next = rate;
+            if (fps >= 0.95 * rate) {
+                next = std::min<u32>(Uncapped, rate + std::max<u32>(10, rate / 5));
+            } else if (fps < 0.80 * rate) {
+                next = std::max<u32>(Floor, static_cast<u32>(fps) / 10 * 10);
+            }
+            if (next != rate) {
+                LOG_INFO(Lib_VideoOut, "D1_FPS uncapped: {:.0f} frames/s at {}; holding {}", fps, rate, next);
+                rate = next;
+                Apply(table, clock, rate);
+                continue;
+            }
+        }
         if (game < 0.97) {
             real = 0;
             if (++slow >= 2 && rate > Floor) {
@@ -144,6 +169,10 @@ void Install() {
     }
     g_setting = n;
     std::thread(Hold).detach();
+}
+
+void NoteFlip() {
+    g_flips.fetch_add(1, std::memory_order_relaxed);
 }
 
 u32 VblankOverride() {

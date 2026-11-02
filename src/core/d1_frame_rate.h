@@ -14,4 +14,7 @@ void Install();
 /// The vblank rate the presenter should run at instead of the setting, or 0 to keep the setting.
 u32 VblankOverride();
 
+/// Called once per presented frame (the uncapped mode follows the presented rate).
+void NoteFlip();
+
 } // namespace Core::D1FrameRate

@@ -74,6 +74,10 @@ void Hold() {
     u32 last_ticks = Read<u32>(clock + 0x0C);
     u64 last_flips = g_flips.load();
     int follow = 0;
+    // Uncapped: a rate the follower had to come down from is not probed again for 2 min (it
+    // flapped 190 -> 228 -> 190 every 10 s in orbit).
+    u32 probe_limit = Uncapped + 1;
+    auto probe_limit_set = std::chrono::steady_clock::now();
     auto last = std::chrono::steady_clock::now();
     int slow = 0, real = 0;
     // The lowest rate that ran slow lately: climbing stops 10 below it, until it lapses (5 min), as a
@@ -115,9 +119,15 @@ void Hold() {
         if (g_setting == 0 && ++follow >= 5) {
             follow = 0;
             u32 next = rate;
+            if (now - probe_limit_set > std::chrono::minutes(2)) {
+                probe_limit = Uncapped + 1;
+            }
             if (fps >= 0.95 * rate) {
-                next = std::min<u32>(Uncapped, rate + std::max<u32>(10, rate / 5));
+                next = std::min<u32>({Uncapped, rate + std::max<u32>(10, rate / 5), probe_limit - 1});
+                next = std::max(next, rate); // a probe never lowers
             } else if (fps < 0.80 * rate) {
+                probe_limit = rate;
+                probe_limit_set = now;
                 next = std::max<u32>(Floor, static_cast<u32>(fps) / 10 * 10);
             }
             if (next != rate) {
@@ -146,7 +156,7 @@ void Hold() {
                 ceiling = target + 1;
             }
             const u32 top = std::min(target, ceiling > Floor + 10 ? ceiling - 10 : Floor);
-            if (rate < top && ++real >= 30) {
+            if (g_setting != 0 && rate < top && ++real >= 30) {
                 rate = std::min<u32>(top, rate + std::max<u32>(10, rate / 5));
                 Apply(table, clock, rate);
                 real = 0;

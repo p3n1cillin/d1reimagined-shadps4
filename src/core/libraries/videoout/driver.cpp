@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
+#include "core/d1_frame_rate.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/time.h"
@@ -337,8 +338,11 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
 }
 
 void VideoOutDriver::PresentThread(std::stop_token token) {
-    const std::chrono::nanoseconds vblank_period(1000000000 /
-                                                 EmulatorSettings.GetVblankFrequency());
+    // D1_FPS: the game's own cadence paces the frames, so the vblank runs fast (d1_frame_rate.cpp).
+    const u32 vblank_hz = Core::D1FrameRate::VblankOverride() != 0
+                              ? Core::D1FrameRate::VblankOverride()
+                              : EmulatorSettings.GetVblankFrequency();
+    const std::chrono::nanoseconds vblank_period(1000000000 / vblank_hz);
 
     Common::SetCurrentThreadName("shadPS4:PresentThread");
     Common::SetCurrentThreadRealtime(vblank_period);

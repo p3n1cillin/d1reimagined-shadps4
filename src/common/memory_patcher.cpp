@@ -13,6 +13,7 @@
 #include "common/path_util.h"
 #include "core/emulator_state.h"
 #include "core/file_format/psf.h"
+#include "core/d1_frame_rate.h"
 #include "core/d1_native_mouse.h"
 #include "memory_patcher.h"
 
@@ -275,6 +276,7 @@ void OnGameLoaded() {
     }
     ApplyPendingPatches();
     Core::D1NativeMouse::Install();
+    Core::D1FrameRate::Install();
 }
 
 void AddPatchToQueue(const patchInfo& patchToAdd) {

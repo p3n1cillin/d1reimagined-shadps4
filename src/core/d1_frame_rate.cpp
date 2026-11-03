@@ -24,6 +24,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -175,11 +176,12 @@ void Hold() {
 }
 
 // The jump's hold boost (0x6F58A0, d1reimagined-source notes/ps4-56578-frame-rate-2026-11-02.md):
-// while jump is held, each tick adds curve(t) to the vertical velocity, t = min(ticks held / 15, 1).
-// Both the 15 and the per-tick addition assume 30 ticks a second: at 60 the boost came twice as
-// fast, and a 100-200 ms press jumped 15-19% higher than on PS4. At N ticks a second the detours
-// scale t by 30/N (the window stays half a second) and each tick's boost by 30/N (the total stays
-// the same). The takeoff impulse added to the first tick's boost is left as it is.
+// while jump is held, each tick adds curve(t) to the vertical velocity, t = ticks held / 15, the
+// ticks held counted up to 15 (0x6F4605). A fresh press also arms a 10-tick buffer (0x6F3C9F). All of
+// it assumes 30 ticks a second: at 60 the boost came twice as fast, and a 100-200 ms press jumped
+// 15-19% higher than on PS4. At N ticks a second the detours count up to 15 N/30 and arm 10 N/30,
+// take t at the 30 Hz tick the moment falls in (ceil(ticks x 30/N) / 15, so the curve is sampled as
+// on PS4) and scale each tick's boost by 30/N; the takeoff impulse is left as it is.
 constexpr u64 JumpTimeTakeoff = 0x6F5A32; // after vdivss xmm1, count, [15.0] (takeoff path)
 constexpr u64 JumpTimeHeld = 0x6F5B04;    // the same, held path
 constexpr std::array<u8, 6> JumpTimeSpan = {0x81, 0xCA, 0xFF, 0x03, 0x00, 0x00}; // or edx, 0x3ff
@@ -187,6 +189,10 @@ constexpr u64 JumpTakeoffAdd = 0x6F5A97; // xmm0 = curve(t); then xmm0 += takeof
 constexpr std::array<u8, 5> JumpTakeoffSpan = {0xC5, 0xFA, 0x10, 0x4D, 0x9C}; // vmovss xmm1,[rbp-0x64]
 constexpr u64 JumpStore = 0x6F5AA0; // both paths store xmm0, the tick's boost, at [r14+0x34]
 constexpr std::array<u8, 6> JumpStoreSpan = {0xC4, 0xC1, 0x7A, 0x11, 0x46, 0x34};
+constexpr u64 JumpCount = 0x6F4619; // mov [r13+0x1c0], ecx: ecx = min(eax = ticks held, 15)
+constexpr std::array<u8, 7> JumpCountSpan = {0x41, 0x89, 0x8D, 0xC0, 0x01, 0x00, 0x00};
+constexpr u64 JumpBuffer = 0x6F3CA9; // mov byte [rbx+0x1bc], 1, after a fresh press armed [rbx+0x1b8]
+constexpr std::array<u8, 7> JumpBufferSpan = {0xC6, 0x83, 0xBC, 0x01, 0x00, 0x00, 0x01};
 
 bool g_takeoff_scaled = false; // the jump runs on one game thread
 
@@ -202,8 +208,26 @@ float StepScale() {
     return n != 0 ? 30.0f / static_cast<float>(n) : 1.0f;
 }
 
+s32 Ticks(s32 ticks_at_30, float step) {
+    return static_cast<s32>(std::lround(ticks_at_30 / step));
+}
+
 void PS4_SYSV_ABI ScaleJumpTime(D1DetourRegisters* regs, u64) {
-    *SavedXmm(regs, 1) *= StepScale();
+    float* t = SavedXmm(regs, 1); // ticks held / 15
+    const float step = StepScale();
+    *t = std::ceil(*t * 15.0f * step - 1e-3f) / 15.0f;
+}
+
+void PS4_SYSV_ABI CapJumpCount(D1DetourRegisters* regs, u64) {
+    const s32 held = static_cast<s32>(regs->rax);
+    regs->rcx = static_cast<u32>(std::min(held, Ticks(15, StepScale())));
+}
+
+void PS4_SYSV_ABI ArmJumpBuffer(D1DetourRegisters* regs, u64) {
+    const uintptr_t controller = static_cast<uintptr_t>(regs->rbx);
+    if (Read<u8>(controller + 0x1BC) == 0 && Read<s32>(controller + 0x1B8) == 10) { // a fresh press
+        Write<s32>(controller + 0x1B8, Ticks(10, StepScale()));
+    }
 }
 
 void PS4_SYSV_ABI ScaleTakeoffBoost(D1DetourRegisters* regs, u64) {
@@ -226,7 +250,9 @@ void InstallRateRules() {
     const bool ok = InstallD1Detour(JumpTimeTakeoff, JumpTimeSpan, ScaleJumpTime) &&
                     InstallD1Detour(JumpTimeHeld, JumpTimeSpan, ScaleJumpTime) &&
                     InstallD1Detour(JumpTakeoffAdd, JumpTakeoffSpan, ScaleTakeoffBoost) &&
-                    InstallD1Detour(JumpStore, JumpStoreSpan, ScaleHeldBoost);
+                    InstallD1Detour(JumpStore, JumpStoreSpan, ScaleHeldBoost) &&
+                    InstallD1Detour(JumpCount, JumpCountSpan, CapJumpCount) &&
+                    InstallD1Detour(JumpBuffer, JumpBufferSpan, ArmJumpBuffer);
     if (ok) {
         LOG_INFO(Lib_VideoOut, "D1 rate rules: the jump's hold boost follows the clock's ticks a second");
     } else {

@@ -6,19 +6,20 @@
 // The rate lives in three values the game sets up once (d1reimagined-source notes/ps4-56578-frame-
 // rate-2026-11-02.md):
 //   the cadence table [0x26BCD08]: +0x08 the present period in us (1001000/N), +0x38 the rate N,
-//                                  +0x40 the tick step in us (1000000/N), which the scheduler ticks on;
+//                                  +0x40 the tick step in us (1000000/N), which the scheduler ticks
+//                                  on;
 //   the engine clock  [0x26BC880]: +0x04 the ticks a second N (an integer: the game's helpers at
 //                                  0x591BF0-0x591C80 turn seconds into ticks with it, such as a
 //                                  weapon's shot interval), +0x08 the tick period in s (1/N),
 //                                  +0x0C the tick count.
-// The time scale [0x26BC888] +0x04 (1.0) stays as it is: it paces the engine (0.5 halved the ticks).
-// Without +0x04 a weapon kept the start-up rate's ticks: booted at 120, a rifle fired every 16 ticks
-// at any rate, 112 rounds a minute at 30 and 900 at 240.
-// Written live they switch the rate with no restart. Each tick costs CPU, and the engine simulates
-// only so many a second (in the mission on the lab PC about 70; in orbit nearly 1000): past that the
-// game slows down. The guard lowers the rate to what the engine achieves (never below 30) and
-// raises it back toward the setting after a stretch of real time. The presenter's vblank runs at the
-// target rate while D1_FPS is set (500 Hz uncapped), so the vblank never holds the rate back.
+// The time scale [0x26BC888] +0x04 (1.0) stays as it is: it paces the engine (0.5 halved the
+// ticks). Without +0x04 a weapon kept the start-up rate's ticks: booted at 120, a rifle fired every
+// 16 ticks at any rate, 112 rounds a minute at 30 and 900 at 240. Written live they switch the rate
+// with no restart. Each tick costs CPU, and the engine simulates only so many a second (in the
+// mission on the lab PC about 70; in orbit nearly 1000): past that the game slows down. The guard
+// lowers the rate to what the engine achieves (never below 30) and raises it back toward the
+// setting after a stretch of real time. The presenter's vblank runs at the target rate while D1_FPS
+// is set (500 Hz uncapped), so the vblank never holds the rate back.
 
 #include <algorithm>
 #include <array>
@@ -93,8 +94,9 @@ void Hold() {
     auto probe_limit_set = std::chrono::steady_clock::now();
     auto last = std::chrono::steady_clock::now();
     int slow = 0, real = 0;
-    // The lowest rate that ran slow lately: climbing stops 10 below it, until it lapses (5 min), as a
-    // scene changes what the PC can hold. Without it the guard climbed past and fell back every 30 s.
+    // The lowest rate that ran slow lately: climbing stops 10 below it, until it lapses (5 min), as
+    // a scene changes what the PC can hold. Without it the guard climbed past and fell back every
+    // 30 s.
     u32 ceiling = target + 1;
     auto ceiling_set = std::chrono::steady_clock::now();
     for (;;) {
@@ -116,8 +118,10 @@ void Hold() {
         last_ticks = ticks;
         last = now;
         // A loading transition may set the clock up again: put the rate back.
-        if (Read<u64>(table + 0x38) != rate || Read<u64>(table + 0x40) != static_cast<u64>(1000000.0 / rate + 0.5) ||
-            Read<u32>(clock + 0x04) != rate || Read<float>(clock + 0x08) != 1.0f / static_cast<float>(rate)) {
+        if (Read<u64>(table + 0x38) != rate ||
+            Read<u64>(table + 0x40) != static_cast<u64>(1000000.0 / rate + 0.5) ||
+            Read<u32>(clock + 0x04) != rate ||
+            Read<float>(clock + 0x08) != 1.0f / static_cast<float>(rate)) {
             Apply(table, clock, rate);
             continue;
         }
@@ -136,7 +140,8 @@ void Hold() {
                 probe_limit = Uncapped + 1;
             }
             if (fps >= 0.95 * rate) {
-                next = std::min<u32>({Uncapped, rate + std::max<u32>(10, rate / 5), probe_limit - 1});
+                next =
+                    std::min<u32>({Uncapped, rate + std::max<u32>(10, rate / 5), probe_limit - 1});
                 next = std::max(next, rate); // a probe never lowers
             } else if (fps < 0.80 * rate) {
                 probe_limit = rate;
@@ -144,7 +149,8 @@ void Hold() {
                 next = std::max<u32>(Floor, static_cast<u32>(fps) / 10 * 10);
             }
             if (next != rate) {
-                LOG_INFO(Lib_VideoOut, "D1_FPS uncapped: {:.0f} frames/s at {}; holding {}", fps, rate, next);
+                LOG_INFO(Lib_VideoOut, "D1_FPS uncapped: {:.0f} frames/s at {}; holding {}", fps,
+                         rate, next);
                 rate = next;
                 Apply(table, clock, rate);
                 continue;
@@ -154,13 +160,14 @@ void Hold() {
             real = 0;
             if (++slow >= 2 && rate > Floor) {
                 const u32 lower = std::max<u32>(Floor, static_cast<u32>(achieved) / 10 * 10);
-                LOG_INFO(Lib_VideoOut, "D1_FPS: {} ran at {:.0f} ticks/s; holding {}", rate, achieved,
-                         lower);
+                LOG_INFO(Lib_VideoOut, "D1_FPS: {} ran at {:.0f} ticks/s; holding {}", rate,
+                         achieved, lower);
                 ceiling = std::min(ceiling, rate);
                 ceiling_set = now;
                 // Uncapped: the follower doesn't probe past what the engine achieved (at 4K it went
                 // 40 -> 50 -> 40 every few seconds, then down one step a probe).
-                probe_limit = std::min(probe_limit, std::max<u32>(lower + 1, static_cast<u32>(achieved)));
+                probe_limit =
+                    std::min(probe_limit, std::max<u32>(lower + 1, static_cast<u32>(achieved)));
                 probe_limit_set = now;
                 rate = lower;
                 Apply(table, clock, rate);
@@ -184,21 +191,23 @@ void Hold() {
 
 // The jump's hold boost (0x6F58A0, d1reimagined-source notes/ps4-56578-frame-rate-2026-11-02.md):
 // while jump is held, each tick adds curve(t) to the vertical velocity, t = ticks held / 15, the
-// ticks held counted up to 15 (0x6F4605). A fresh press also arms a 10-tick buffer (0x6F3C9F). All of
-// it assumes 30 ticks a second: at 60 the boost came twice as fast, and a 100-200 ms press jumped
-// 15-19% higher than on PS4. At N ticks a second the detours count up to 15 N/30 and arm 10 N/30,
-// take t at the 30 Hz tick the moment falls in (floor(ticks x 30/N) / 15, so the curve is sampled as
-// on PS4) and scale each tick's boost by 30/N; the takeoff impulse is left as it is.
+// ticks held counted up to 15 (0x6F4605). A fresh press also arms a 10-tick buffer (0x6F3C9F). All
+// of it assumes 30 ticks a second: at 60 the boost came twice as fast, and a 100-200 ms press
+// jumped 15-19% higher than on PS4. At N ticks a second the detours count up to 15 N/30 and arm 10
+// N/30, take t at the 30 Hz tick the moment falls in (floor(ticks x 30/N) / 15, so the curve is
+// sampled as on PS4) and scale each tick's boost by 30/N; the takeoff impulse is left as it is.
 constexpr u64 JumpTimeTakeoff = 0x6F5A32; // after vdivss xmm1, count, [15.0] (takeoff path)
 constexpr u64 JumpTimeHeld = 0x6F5B04;    // the same, held path
 constexpr std::array<u8, 6> JumpTimeSpan = {0x81, 0xCA, 0xFF, 0x03, 0x00, 0x00}; // or edx, 0x3ff
 constexpr u64 JumpTakeoffAdd = 0x6F5A97; // xmm0 = curve(t); then xmm0 += takeoff impulse
-constexpr std::array<u8, 5> JumpTakeoffSpan = {0xC5, 0xFA, 0x10, 0x4D, 0x9C}; // vmovss xmm1,[rbp-0x64]
+constexpr std::array<u8, 5> JumpTakeoffSpan = {0xC5, 0xFA, 0x10, 0x4D,
+                                               0x9C}; // vmovss xmm1,[rbp-0x64]
 constexpr u64 JumpStore = 0x6F5AA0; // both paths store xmm0, the tick's boost, at [r14+0x34]
 constexpr std::array<u8, 6> JumpStoreSpan = {0xC4, 0xC1, 0x7A, 0x11, 0x46, 0x34};
 constexpr u64 JumpCount = 0x6F4619; // mov [r13+0x1c0], ecx: ecx = min(eax = ticks held, 15)
 constexpr std::array<u8, 7> JumpCountSpan = {0x41, 0x89, 0x8D, 0xC0, 0x01, 0x00, 0x00};
-constexpr u64 JumpBuffer = 0x6F3CA9; // mov byte [rbx+0x1bc], 1, after a fresh press armed [rbx+0x1b8]
+constexpr u64 JumpBuffer =
+    0x6F3CA9; // mov byte [rbx+0x1bc], 1, after a fresh press armed [rbx+0x1b8]
 constexpr std::array<u8, 7> JumpBufferSpan = {0xC6, 0x83, 0xBC, 0x01, 0x00, 0x00, 0x01};
 
 bool g_takeoff_scaled = false; // the jump runs on one game thread
@@ -208,8 +217,8 @@ bool g_takeoff_scaled = false; // the jump runs on one game thread
 // <= 4 (also 0x4DAC10): 133 ms on PS4. The controller's set-up (0x4D3BC0) starts the count at 16,
 // outside that window, so it scales with it.
 struct TickImmediate {
-    u64 vaddr;            // the immediate's own address
-    u8 width;             // 1: a signed imm8; 4: an imm32
+    u64 vaddr; // the immediate's own address
+    u8 width;  // 1: a signed imm8; 4: an imm32
     s32 ticks_at_30;
     std::array<u8, 4> code; // the instruction's first bytes, checked before the first write
     u8 code_len;
@@ -221,7 +230,8 @@ constexpr std::array<TickImmediate, 3> TickImmediates = {{
 }};
 
 float* SavedXmm(D1DetourRegisters* regs, int i) {
-    // InstallD1Detour's trampoline saves ymm0-15 below the registers, 32-aligned, and restores them.
+    // InstallD1Detour's trampoline saves ymm0-15 below the registers, 32-aligned, and restores
+    // them.
     const uintptr_t area = (reinterpret_cast<uintptr_t>(regs) & ~uintptr_t{31}) - 16 * 32;
     return reinterpret_cast<float*>(area + i * 32);
 }
@@ -256,6 +266,21 @@ void PS4_SYSV_ABI ArmJumpBuffer(D1DetourRegisters* regs, u64) {
 
 void PS4_SYSV_ABI ScaleTakeoffBoost(D1DetourRegisters* regs, u64) {
     *SavedXmm(regs, 0) *= StepScale();
+    // D1 56578: preserve the PS4 integrator's initial half-step. For constant gravity a jump
+    // integrated at dt has a peak v^2/(2g) + v*dt/2. Advancing the launch velocity by
+    // g*(dt30-dt)/2 restores that half-step at higher rates, without accumulating a new force
+    // on every airborne tick. Read g from the same native globals as 0x4DAA60 (+0 * +0x10 on
+    // ascent), not a measured height or a guessed gravity. Walking, ledge drops, and falls that
+    // did not start with a jump never execute this takeoff-only path. At 30 this is exactly zero.
+    const uintptr_t clock = Pointer(ClockPtr);
+    const u32 n = clock != 0 ? Read<u32>(clock + 0x04) : 0;
+    const uintptr_t gravity = Pointer(0x2647D10);
+    if (n > 30 && gravity != 0) {
+        const float g = Read<float>(gravity) * Read<float>(gravity + 0x10);
+        if (std::isfinite(g) && g >= 0.0f) {
+            *SavedXmm(regs, 0) += g * (1.0f / 30.0f - 1.0f / static_cast<float>(n)) * 0.5f;
+        }
+    }
     g_takeoff_scaled = true;
 }
 
@@ -281,9 +306,11 @@ void WriteTickImmediates(u32 n) {
 
 void FollowTickImmediates() {
     for (const auto& imm : TickImmediates) {
-        const auto* start = reinterpret_cast<const u8*>(MemoryPatcher::g_eboot_address + imm.vaddr - 3);
+        const auto* start =
+            reinterpret_cast<const u8*>(MemoryPatcher::g_eboot_address + imm.vaddr - 3);
         if (std::memcmp(start, imm.code.data(), imm.code_len) != 0) {
-            LOG_ERROR(Lib_VideoOut, "D1 rate rules: unexpected code at {:#x}; tick constants left alone",
+            LOG_ERROR(Lib_VideoOut,
+                      "D1 rate rules: unexpected code at {:#x}; tick constants left alone",
                       imm.vaddr - 3);
             return;
         }
@@ -301,11 +328,12 @@ void FollowTickImmediates() {
     }
 }
 
-// Render sizes wider than 2048 (experimental, d1reimagined-source notes/ps4-56578-resolution-2026-11-03.md):
-// 0x812800 builds a viewport from a view object's width [+0x4F6] and height [+0x4F8], and two of
-// those objects stay 2048 wide when the game renders wider (d1-res-patch.py), so the picture stops
-// at x = 2048 (and at y = 2048 at 4K). When the render size globals (0x18DCC58 / 0x18DCC5C) are
-// larger, a width or height of exactly 2048 there is taken as the render width or height.
+// Render sizes wider than 2048 (experimental, d1reimagined-source
+// notes/ps4-56578-resolution-2026-11-03.md): 0x812800 builds a viewport from a view object's width
+// [+0x4F6] and height [+0x4F8], and two of those objects stay 2048 wide when the game renders wider
+// (d1-res-patch.py), so the picture stops at x = 2048 (and at y = 2048 at 4K). When the render size
+// globals (0x18DCC58 / 0x18DCC5C) are larger, a width or height of exactly 2048 there is taken as
+// the render width or height.
 constexpr u64 ViewportFromView = 0x81280B; // movzx ecx, word [rdi+0x4f8]
 constexpr std::array<u8, 7> ViewportFromViewSpan = {0x0F, 0xB7, 0x8F, 0xF8, 0x04, 0x00, 0x00};
 constexpr u64 RenderWidth = 0x18DCC58;
@@ -347,7 +375,8 @@ void InstallRateRules() {
                     InstallD1Detour(JumpCount, JumpCountSpan, CapJumpCount) &&
                     InstallD1Detour(JumpBuffer, JumpBufferSpan, ArmJumpBuffer);
     if (ok) {
-        LOG_INFO(Lib_VideoOut, "D1 rate rules: the jump's hold boost follows the clock's ticks a second");
+        LOG_INFO(Lib_VideoOut,
+                 "D1 rate rules: the jump's hold boost follows the clock's ticks a second");
     } else {
         LOG_ERROR(Lib_VideoOut, "D1 rate rules: a jump detour was refused");
     }
@@ -376,8 +405,8 @@ void NoteFlip() {
 }
 
 u32 VblankOverride() {
-    // The vblank at the target rate (500 uncapped): fast enough never to hold the rate back, without
-    // running the presenter at 1000 Hz for nothing.
+    // The vblank at the target rate (500 uncapped): fast enough never to hold the rate back,
+    // without running the presenter at 1000 Hz for nothing.
     const char* s = std::getenv("D1_FPS");
     if (s == nullptr || *s == '\0') {
         return 0;

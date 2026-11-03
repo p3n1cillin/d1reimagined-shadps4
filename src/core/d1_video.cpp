@@ -210,9 +210,15 @@ void Draw() {
         return;
     }
     ImGui::SetNextWindowSize(ImVec2(470, 250), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowCollapsed(false, ImGuiCond_Appearing);
     bool visible = true;
     if (ImGui::Begin("D1 Video", &visible,
-                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoCollapse)) {
+        if (ImGui::IsWindowAppearing()) {
+            ImGui::SetWindowFocus();
+            ImGui::SetKeyboardFocusHere(); // D1: keyboard navigation starts on Frame rate
+        }
         int index = 0;
         for (size_t i = 0; i < Rates.size(); ++i) {
             if (Rates[i] == selected_rate) {

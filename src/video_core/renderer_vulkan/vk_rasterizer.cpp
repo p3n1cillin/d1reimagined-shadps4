@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 
@@ -444,6 +445,24 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     ResetBindings(false);
 }
 
+
+// D1 diagnostics: D1_TRACE_COVER=<n> logs (error level, once per distinct value) every viewport or
+// scissor whose right edge is n and every compute dispatch n threads wide: which pass stops at n
+// when the game renders wider (the render-size work, d1reimagined-source notes/ps4-56578-resolution).
+static u32 D1TraceCover() {
+    static const u32 n = [] {
+        const char* v = std::getenv("D1_TRACE_COVER");
+        return v ? static_cast<u32>(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    return n;
+}
+static bool D1CoverFirst(u64 key) {
+    static std::mutex m;
+    static std::unordered_set<u64> seen;
+    std::scoped_lock lk{m};
+    return seen.insert(key).second;
+}
+
 void Rasterizer::DispatchDirect() {
     RENDERER_TRACE;
 
@@ -473,6 +492,16 @@ void Rasterizer::DispatchDirect() {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+    if (const u32 n = D1TraceCover(); n != 0) {
+        const u32 wide = cs_program.dim_x * cs_program.num_thread_x.full;
+        const u64 shader = reinterpret_cast<u64>(cs_program.Address<u8*>());
+        if (wide == n && D1CoverFirst(shader ^ (u64(wide) << 48))) {
+            LOG_ERROR(Render_Vulkan, "D1 cover {}: dispatch {}x{}x{} groups of {}x{}x{} shader {:#x}", n,
+                      cs_program.dim_x, cs_program.dim_y, cs_program.dim_z,
+                      cs_program.num_thread_x.full, cs_program.num_thread_y.full,
+                      cs_program.num_thread_z.full, shader);
+        }
+    }
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
     DebugState.IncDispatch();
 
@@ -1616,6 +1645,20 @@ void Rasterizer::UpdateViewportScissorState() const {
             .offset = {vp_scsr.top_left_x, vp_scsr.top_left_y},
             .extent = {vp_scsr.GetWidth(), vp_scsr.GetHeight()},
         });
+        if (const u32 n = D1TraceCover(); n != 0) {
+            const u32 vp_right = static_cast<u32>(viewport.x + viewport.width + 0.5f);
+            const u32 sc_right = static_cast<u32>(vp_scsr.bottom_right_x);
+            if ((vp_right == n || sc_right == n) &&
+                D1CoverFirst((u64(vp_right) << 32) ^ (u64(sc_right) << 16) ^ u64(vp_scsr.bottom_right_y) ^
+                             (u64(1) << 63))) {
+                LOG_ERROR(Render_Vulkan,
+                          "D1 cover {}: viewport x {} w {} y {} h {}, scissor {},{} - {},{} (screen {}, window {}, generic {})",
+                          n, viewport.x, viewport.width, viewport.y, viewport.height, vp_scsr.top_left_x,
+                          vp_scsr.top_left_y, vp_scsr.bottom_right_x, vp_scsr.bottom_right_y,
+                          regs.screen_scissor.bottom_right_x, regs.window_scissor.bottom_right_x,
+                          regs.generic_scissor.bottom_right_x);
+            }
+        }
     }
 
     if (viewports.empty()) {

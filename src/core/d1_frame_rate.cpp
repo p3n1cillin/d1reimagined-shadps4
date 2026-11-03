@@ -21,6 +21,7 @@
 // target rate while D1_FPS is set (500 Hz uncapped), so the vblank never holds the rate back.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -29,6 +30,7 @@
 
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
+#include "core/cpu_patches.h"
 #include "core/d1_frame_rate.h"
 
 namespace Core::D1FrameRate {
@@ -172,9 +174,70 @@ void Hold() {
     }
 }
 
+// The jump's hold boost (0x6F58A0, d1reimagined-source notes/ps4-56578-frame-rate-2026-11-02.md):
+// while jump is held, each tick adds curve(t) to the vertical velocity, t = min(ticks held / 15, 1).
+// Both the 15 and the per-tick addition assume 30 ticks a second: at 60 the boost came twice as
+// fast, and a 100-200 ms press jumped 15-19% higher than on PS4. At N ticks a second the detours
+// scale t by 30/N (the window stays half a second) and each tick's boost by 30/N (the total stays
+// the same). The takeoff impulse added to the first tick's boost is left as it is.
+constexpr u64 JumpTimeTakeoff = 0x6F5A32; // after vdivss xmm1, count, [15.0] (takeoff path)
+constexpr u64 JumpTimeHeld = 0x6F5B04;    // the same, held path
+constexpr std::array<u8, 6> JumpTimeSpan = {0x81, 0xCA, 0xFF, 0x03, 0x00, 0x00}; // or edx, 0x3ff
+constexpr u64 JumpTakeoffAdd = 0x6F5A97; // xmm0 = curve(t); then xmm0 += takeoff impulse
+constexpr std::array<u8, 5> JumpTakeoffSpan = {0xC5, 0xFA, 0x10, 0x4D, 0x9C}; // vmovss xmm1,[rbp-0x64]
+constexpr u64 JumpStore = 0x6F5AA0; // both paths store xmm0, the tick's boost, at [r14+0x34]
+constexpr std::array<u8, 6> JumpStoreSpan = {0xC4, 0xC1, 0x7A, 0x11, 0x46, 0x34};
+
+bool g_takeoff_scaled = false; // the jump runs on one game thread
+
+float* SavedXmm(D1DetourRegisters* regs, int i) {
+    // InstallD1Detour's trampoline saves ymm0-15 below the registers, 32-aligned, and restores them.
+    const uintptr_t area = (reinterpret_cast<uintptr_t>(regs) & ~uintptr_t{31}) - 16 * 32;
+    return reinterpret_cast<float*>(area + i * 32);
+}
+
+float StepScale() {
+    const uintptr_t clock = Pointer(ClockPtr);
+    const u32 n = clock != 0 ? Read<u32>(clock + 0x04) : 0;
+    return n != 0 ? 30.0f / static_cast<float>(n) : 1.0f;
+}
+
+void PS4_SYSV_ABI ScaleJumpTime(D1DetourRegisters* regs, u64) {
+    *SavedXmm(regs, 1) *= StepScale();
+}
+
+void PS4_SYSV_ABI ScaleTakeoffBoost(D1DetourRegisters* regs, u64) {
+    *SavedXmm(regs, 0) *= StepScale();
+    g_takeoff_scaled = true;
+}
+
+void PS4_SYSV_ABI ScaleHeldBoost(D1DetourRegisters* regs, u64) {
+    if (g_takeoff_scaled) { // the takeoff path's curve part, already scaled
+        g_takeoff_scaled = false;
+        return;
+    }
+    *SavedXmm(regs, 0) *= StepScale();
+}
+
+void InstallRateRules() {
+    if (const char* s = std::getenv("D1_RATE_RULES"); s != nullptr && std::strcmp(s, "0") == 0) {
+        return;
+    }
+    const bool ok = InstallD1Detour(JumpTimeTakeoff, JumpTimeSpan, ScaleJumpTime) &&
+                    InstallD1Detour(JumpTimeHeld, JumpTimeSpan, ScaleJumpTime) &&
+                    InstallD1Detour(JumpTakeoffAdd, JumpTakeoffSpan, ScaleTakeoffBoost) &&
+                    InstallD1Detour(JumpStore, JumpStoreSpan, ScaleHeldBoost);
+    if (ok) {
+        LOG_INFO(Lib_VideoOut, "D1 rate rules: the jump's hold boost follows the clock's ticks a second");
+    } else {
+        LOG_ERROR(Lib_VideoOut, "D1 rate rules: a jump detour was refused");
+    }
+}
+
 } // namespace
 
 void Install() {
+    InstallRateRules();
     const char* s = std::getenv("D1_FPS");
     if (s == nullptr || *s == '\0') {
         return;

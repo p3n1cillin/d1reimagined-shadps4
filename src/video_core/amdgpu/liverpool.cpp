@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <bit>
+#include <cstdlib>
+#include <mutex>
+#include <unordered_set>
+
 #include <boost/preprocessor/stringize.hpp>
 
 #include "common/assert.h"
@@ -218,6 +223,38 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
     FIBER_EXIT;
 }
 
+
+// D1 diagnostics: with D1_TRACE_COVER=<n>, log (once per guest address) the command-buffer word that
+// sets the screen scissor's right edge (PA_SC_SCREEN_SCISSOR_BR, 0xA00D) to n or viewport 0's x
+// scale (PA_CL_VPORT_XSCALE, 0xA10F) to n/2: a CPU write watch on that address then names the game
+// code that computed it (d1reimagined-source notes/ps4-56578-resolution-2026-11-03.md).
+static void D1TraceCoverPacket(u32 reg_addr, const u32* payload, u32 words) {
+    static const u32 n = [] {
+        const char* v = std::getenv("D1_TRACE_COVER");
+        return v ? static_cast<u32>(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    if (n == 0) {
+        return;
+    }
+    static std::mutex m;
+    static std::unordered_set<u64> seen;
+    for (u32 i = 0; i < words; ++i) {
+        const u32 reg = reg_addr + i;
+        const u32 v = payload[i];
+        const bool scissor = reg == 0xA00D && (v & 0xFFFF) == n;
+        const bool xscale = reg == 0xA10F && std::bit_cast<float>(v) == static_cast<float>(n) / 2.0f;
+        if (!scissor && !xscale) {
+            continue;
+        }
+        const u64 at = reinterpret_cast<u64>(&payload[i]);
+        std::scoped_lock lk{m};
+        if (seen.insert(at).second && seen.size() < 200) {
+            LOG_ERROR(Render_Vulkan, "D1 cover packet: {} {:#010x} at guest {:#x}",
+                      scissor ? "screen scissor br" : "viewport xscale", v, at);
+        }
+    }
+}
+
 Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb) {
     FIBER_ENTER(dcb_task_name);
 
@@ -320,6 +357,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 const auto* payload = reinterpret_cast<const u32*>(header + 2);
 
                 std::memcpy(&regs.reg_array[reg_addr], payload, (count - 1) * sizeof(u32));
+                D1TraceCoverPacket(reg_addr, payload, count - 1);
 
                 // In the case of HW, render target memory has alignment as color block operates on
                 // tiles. There is no information of actual resource extents stored in CB context

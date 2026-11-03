@@ -39,6 +39,22 @@ struct Override {
     std::vector<Field> fields;
     std::mutex mutex;
 
+    bool IsApplied(u64 address) const {
+        const auto* root = reinterpret_cast<const u8*>(address);
+        if (!address || Read<u64>(root) != original.size())
+            return false;
+        for (const auto& f : fields) {
+            const auto* head =
+                candidate.data() + f.offset + 8 + Read<s64>(candidate.data() + f.offset + 8);
+            const auto rel = static_cast<s64>(reinterpret_cast<uintptr_t>(head)) -
+                             static_cast<s64>(address + f.offset + 8);
+            if (Read<s64>(root + f.offset + 8) != rel ||
+                Read<u64>(root + f.offset) != Read<u64>(candidate.data() + f.offset))
+                return false;
+        }
+        return true;
+    }
+
     void LoadPair(const std::filesystem::path& dir, const char* stem, std::vector<Field> arrays) {
         original = Load(dir / (std::string{stem} + "-original.bin"));
         candidate = Load(dir / (std::string{stem} + "-candidate.bin"));
@@ -63,7 +79,8 @@ struct Override {
             const auto count = Read<u64>(candidate.data() + f.offset);
             const auto rel = Read<s64>(candidate.data() + f.offset + 8);
             const s64 head = static_cast<s64>(f.offset + 8) + rel;
-            if (count > 4096 || head < 4 || static_cast<u64>(head) + 16 > candidate.size() ||
+            if (count > Limit / f.stride || head < 4 ||
+                static_cast<u64>(head) + 16 > candidate.size() ||
                 count * f.stride > candidate.size() - head - 16 ||
                 Read<u32>(candidate.data() + head - 4) != 0x80800184 ||
                 Read<u64>(candidate.data() + head) != count) {

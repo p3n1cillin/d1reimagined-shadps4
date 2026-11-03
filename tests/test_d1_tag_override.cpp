@@ -44,8 +44,16 @@ int main() {
     Override o;
     o.LoadPair(dir, "test", {{8, 4}});
     auto live = original;
+    const auto selected = o.Select(reinterpret_cast<uintptr_t>(live.data()));
+    assert(selected == reinterpret_cast<uintptr_t>(o.candidate.data()));
+    assert(live == original); // cached copies retain their original relative descriptors
+    auto cached = live;
+    assert(o.Select(reinterpret_cast<uintptr_t>(cached.data())) == selected);
+    assert(o.Select(0) == 0);
     live[24] = 1;
     const auto altered = live;
+    assert(o.Select(reinterpret_cast<uintptr_t>(live.data())) ==
+           reinterpret_cast<uintptr_t>(live.data()));
     assert(!o.Apply(reinterpret_cast<uintptr_t>(live.data())));
     assert(live == altered); // mismatched native content is never changed
     live = original;

@@ -297,23 +297,29 @@ void FollowTickImmediates() {
 // Render sizes wider than 2048 (experimental, d1reimagined-source notes/ps4-56578-resolution-2026-11-03.md):
 // 0x812800 builds a viewport from a view object's width [+0x4F6] and height [+0x4F8], and two of
 // those objects stay 2048 wide when the game renders wider (d1-res-patch.py), so the picture stops
-// at x = 2048. When the render width global (0x18DCC58) is wider, a width of exactly 2048 there is
-// taken as the render width.
+// at x = 2048 (and at y = 2048 at 4K). When the render size globals (0x18DCC58 / 0x18DCC5C) are
+// larger, a width or height of exactly 2048 there is taken as the render width or height.
 constexpr u64 ViewportFromView = 0x81280B; // movzx ecx, word [rdi+0x4f8]
 constexpr std::array<u8, 7> ViewportFromViewSpan = {0x0F, 0xB7, 0x8F, 0xF8, 0x04, 0x00, 0x00};
 constexpr u64 RenderWidth = 0x18DCC58;
+constexpr u64 RenderHeight = 0x18DCC5C;
 
 void PS4_SYSV_ABI WidenView(D1DetourRegisters* regs, u64) {
-    const u16 render = Read<u16>(MemoryPatcher::g_eboot_address + RenderWidth);
+    const u16 width = Read<u16>(MemoryPatcher::g_eboot_address + RenderWidth);
+    const u16 height = Read<u16>(MemoryPatcher::g_eboot_address + RenderHeight);
     const uintptr_t view = static_cast<uintptr_t>(regs->rdi);
-    if (render > 2048 && Read<u16>(view + 0x4F6) == 2048) {
-        Write<u16>(view + 0x4F6, render);
+    if (width > 2048 && Read<u16>(view + 0x4F6) == 2048) {
+        Write<u16>(view + 0x4F6, width);
+    }
+    if (height > 2048 && Read<u16>(view + 0x4F8) == 2048) {
+        Write<u16>(view + 0x4F8, height);
     }
 }
 
 void InstallWideViews() {
-    if (Read<u16>(MemoryPatcher::g_eboot_address + RenderWidth) <= 2048) {
-        return; // only with a render-size patch wider than 2048
+    if (Read<u16>(MemoryPatcher::g_eboot_address + RenderWidth) <= 2048 &&
+        Read<u16>(MemoryPatcher::g_eboot_address + RenderHeight) <= 2048) {
+        return; // only with a render-size patch larger than 2048
     }
     if (InstallD1Detour(ViewportFromView, ViewportFromViewSpan, WidenView)) {
         LOG_INFO(Lib_VideoOut, "D1 wide views: 2048-wide view objects follow the render width");

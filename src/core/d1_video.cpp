@@ -185,6 +185,10 @@ bool IsOpen() {
     return open.load(std::memory_order_relaxed);
 }
 
+bool IsEnabled() {
+    return enabled.load(std::memory_order_relaxed);
+}
+
 bool ProcessEvent(const SDL_Event& event) {
     if (!enabled.load()) {
         return false;

@@ -12,5 +12,6 @@ void Install();
 void Draw();
 bool ProcessEvent(const SDL_Event& event);
 bool IsOpen();
+bool IsEnabled();
 
 } // namespace Core::D1Video

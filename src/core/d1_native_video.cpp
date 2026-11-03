@@ -33,6 +33,7 @@ std::mutex label_mutex;
 bool active = false; // set before the guest runs; failed installation leaves every callback inert
 std::atomic<bool> labels_ready{false};
 std::atomic<unsigned> lookup_reports{0}, use_reports{0};
+std::atomic<bool> graph_selected{false};
 
 std::pair<u64, u64> EntryRange() {
     const auto field = english.candidate.data() + 0x48;
@@ -148,6 +149,18 @@ void PS4_SYSV_ABI Graph(D1DetourRegisters* regs, u64) {
         }
     }
 }
+void PS4_SYSV_ABI SelectGraph(D1DetourRegisters* regs, u64) {
+    if (!active)
+        return;
+    const auto selected = graph.Select(regs->rdi);
+    if (selected != regs->rdi) {
+        // D1: select before imports, component construction and property registration. The
+        // binding pass alone is too late to introduce a new dynamic options-group property.
+        regs->rdi = selected;
+        if (!graph_selected.exchange(true))
+            LOG_INFO(Config, "D1 native video: graph selected before component construction");
+    }
+}
 void PS4_SYSV_ABI SettingsGroup(D1DetourRegisters* regs, u64) {
     if (active) {
         TryLabels();
@@ -203,6 +216,8 @@ void Install() {
             throw std::runtime_error("Native video manifest disagrees with supported option ids");
         }
         bool ok =
+            InstallD1Detour(0xa8b2de, std::array<u8, 7>{0x48, 0x8b, 0x47, 0x10, 0x48, 0x85, 0xc0},
+                            SelectGraph) &&
             InstallD1Detour(0xa8be60,
                             std::array<u8, 10>{0x45, 0x31, 0xff, 0x48, 0x8b, 0x82, 0x40, 1, 0, 0},
                             Graph) &&

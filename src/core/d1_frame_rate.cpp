@@ -158,6 +158,10 @@ void Hold() {
                          lower);
                 ceiling = std::min(ceiling, rate);
                 ceiling_set = now;
+                // Uncapped: the follower doesn't probe a rate the guard came down from (at 4K it
+                // went 40 -> 50 -> 40 every few seconds).
+                probe_limit = std::min(probe_limit, rate);
+                probe_limit_set = now;
                 rate = lower;
                 Apply(table, clock, rate);
                 slow = 0;

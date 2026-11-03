@@ -16,7 +16,7 @@
 // at any rate, 112 rounds a minute at 30 and 900 at 240.
 // Written live they switch the rate with no restart. Each tick costs CPU, and the engine simulates
 // only so many a second (in the mission on the lab PC about 70; in orbit nearly 1000): past that the
-// game slows down. The guard lowers the rate to what the engine achieves (never below 60) and
+// game slows down. The guard lowers the rate to what the engine achieves (never below 30) and
 // raises it back toward the setting after a stretch of real time. The presenter's vblank runs at the
 // target rate while D1_FPS is set (500 Hz uncapped), so the vblank never holds the rate back.
 
@@ -41,7 +41,10 @@ namespace {
 constexpr u64 CadencePtr = 0x26BCD08;
 constexpr u64 ClockPtr = 0x26BC880;
 constexpr u32 Uncapped = 1000;
-constexpr u32 Floor = 60;
+// The guard never goes below the PS4's own 30: at 4K the lab PC presents about 40 frames a second,
+// and a floor of 60 held the game at 0.72x real time.
+constexpr u32 Floor = 30;
+constexpr u32 UncappedStart = 60;
 
 int g_setting = -1; // -1: off
 std::atomic<u64> g_flips{0};
@@ -78,7 +81,7 @@ void Hold() {
         table = Pointer(CadencePtr);
         clock = Pointer(ClockPtr);
     }
-    u32 rate = g_setting == 0 ? Floor : target; // uncapped climbs from 60
+    u32 rate = g_setting == 0 ? UncappedStart : target; // uncapped climbs from 60
     Apply(table, clock, rate);
     LOG_INFO(Lib_VideoOut, "D1_FPS: holding {} (setting {})", rate, g_setting);
     u32 last_ticks = Read<u32>(clock + 0x0C);

@@ -135,7 +135,7 @@ void Install() {
                             SettingsGroup) &&
             InstallD1Detour(0x9af328, std::array<u8, 7>{0x48, 0x8b, 0x41, 0x20, 0x48, 0x85, 0xc0},
                             SettingsRow) &&
-            InstallD1Detour(0x9af53b, std::array<u8, 5>{0x83, 0xf9, 0x13, 0x77, 0x6e}, Get) &&
+            InstallD1Detour(0x9af536, std::array<u8, 5>{0xb8, 0xff, 0xff, 0xff, 0xff}, Get, true) &&
             InstallD1Detour(0x9b040c, std::array<u8, 7>{0x0f, 0xb6, 0x8b, 0xb4, 0, 0, 0}, Set);
         active = ok;
         LOG_INFO(Config, "D1 native video: experimental hooks {} (native UI requires validation)",

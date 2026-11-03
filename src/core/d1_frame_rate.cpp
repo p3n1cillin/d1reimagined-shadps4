@@ -196,6 +196,23 @@ constexpr std::array<u8, 7> JumpBufferSpan = {0xC6, 0x83, 0xBC, 0x01, 0x00, 0x00
 
 bool g_takeoff_scaled = false; // the jump runs on one game thread
 
+// Tick constants written into the code (immediates) for N ticks a second, as ticks_at_30 x N/30.
+// The airborne step (0x4DABB0) keeps the ground path while the ticks since leaving the ground are
+// <= 4 (also 0x4DAC10): 133 ms on PS4. The controller's set-up (0x4D3BC0) starts the count at 16,
+// outside that window, so it scales with it.
+struct TickImmediate {
+    u64 vaddr;            // the immediate's own address
+    u8 width;             // 1: a signed imm8; 4: an imm32
+    s32 ticks_at_30;
+    std::array<u8, 4> code; // the instruction's first bytes, checked before the first write
+    u8 code_len;
+};
+constexpr std::array<TickImmediate, 3> TickImmediates = {{
+    {0x4DABCB, 1, 4, {0x83, 0x7F, 0x50, 0x04}, 4},  // cmp dword [rdi+0x50], 4
+    {0x4DAC1B, 1, 4, {0x83, 0x7F, 0x50, 0x04}, 4},  // the same, 0x4DAC10
+    {0x4D3D61, 4, 16, {0xC7, 0x43, 0x50, 0x10}, 4}, // mov dword [rbx+0x50], 16
+}};
+
 float* SavedXmm(D1DetourRegisters* regs, int i) {
     // InstallD1Detour's trampoline saves ymm0-15 below the registers, 32-aligned, and restores them.
     const uintptr_t area = (reinterpret_cast<uintptr_t>(regs) & ~uintptr_t{31}) - 16 * 32;
@@ -243,10 +260,45 @@ void PS4_SYSV_ABI ScaleHeldBoost(D1DetourRegisters* regs, u64) {
     *SavedXmm(regs, 0) *= StepScale();
 }
 
+void WriteTickImmediates(u32 n) {
+    for (const auto& imm : TickImmediates) {
+        const s32 ticks = std::max<s32>(1, Ticks(imm.ticks_at_30, 30.0f / static_cast<float>(n)));
+        const uintptr_t at = MemoryPatcher::g_eboot_address + imm.vaddr;
+        if (imm.width == 1) {
+            Write<s8>(at, static_cast<s8>(std::min(ticks, 127)));
+        } else {
+            Write<s32>(at, ticks);
+        }
+    }
+}
+
+void FollowTickImmediates() {
+    for (const auto& imm : TickImmediates) {
+        const auto* start = reinterpret_cast<const u8*>(MemoryPatcher::g_eboot_address + imm.vaddr - 3);
+        if (std::memcmp(start, imm.code.data(), imm.code_len) != 0) {
+            LOG_ERROR(Lib_VideoOut, "D1 rate rules: unexpected code at {:#x}; tick constants left alone",
+                      imm.vaddr - 3);
+            return;
+        }
+    }
+    u32 written = 30;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        const uintptr_t clock = Pointer(ClockPtr);
+        const u32 n = clock != 0 ? Read<u32>(clock + 0x04) : 0;
+        if (n != 0 && n != written) {
+            WriteTickImmediates(n);
+            LOG_INFO(Lib_VideoOut, "D1 rate rules: tick constants for {} ticks a second", n);
+            written = n;
+        }
+    }
+}
+
 void InstallRateRules() {
     if (const char* s = std::getenv("D1_RATE_RULES"); s != nullptr && std::strcmp(s, "0") == 0) {
         return;
     }
+    std::thread(FollowTickImmediates).detach();
     const bool ok = InstallD1Detour(JumpTimeTakeoff, JumpTimeSpan, ScaleJumpTime) &&
                     InstallD1Detour(JumpTimeHeld, JumpTimeSpan, ScaleJumpTime) &&
                     InstallD1Detour(JumpTakeoffAdd, JumpTakeoffSpan, ScaleTakeoffBoost) &&

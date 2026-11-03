@@ -46,14 +46,19 @@ bool IsEntry(u64 address) {
 
 // D1: optional bounded diagnostics avoid the GPU exception overhead of attaching a debugger.
 void PS4_SYSV_ABI Lookup(D1DetourRegisters* regs, u64) {
-    if (!active || !english.IsApplied(regs->rsi))
+    if (!active)
+        return;
+    const auto begin = reinterpret_cast<u64>(english.candidate.data());
+    if (regs->rax < begin || regs->rax >= begin + english.candidate.size())
         return;
     const bool valid = IsEntry(regs->rax);
     if ((!valid || lookup_reports.load() < 8) && lookup_reports.fetch_add(1) < 32) {
         const auto [start, end] = EntryRange();
         LOG_INFO(Config,
-                 "D1 native video lookup: ordinal {} entry {:#x} range {:#x}..{:#x} valid {}",
-                 regs->rdx / 4, regs->rax, start, end, valid);
+                 "D1 native video lookup: ordinal {} entry {:#x} range {:#x}..{:#x} valid {} "
+                 "payload {:#x} applied {} native head {:#x}",
+                 regs->rdx / 4, regs->rax, start, end, valid, regs->rsi,
+                 english.IsApplied(regs->rsi), regs->rcx);
     }
 }
 

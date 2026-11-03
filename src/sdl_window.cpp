@@ -15,6 +15,7 @@
 #include "common/io_file.h"
 #include "common/logging/formatter.h"
 #include "common/scope_exit.h"
+#include "core/d1_video.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -209,6 +210,16 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
+    // D1: feed ImGui even while the Video panel consumes game input (release events pass through).
+    if (Core::D1Video::ProcessEvent(event)) {
+        ImGui::Core::ProcessEvent(&event);
+        if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION ||
+            event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+            // D1: maintain physical state while libScePad returns neutral to the guest.
+            OnGamepadEvent(&event);
+        }
+        return;
+    }
     if (Libraries::Mouse::PushSDLEvent(event) || Libraries::Keyboard::PushSDLEvent(event)) {
         return;
     }

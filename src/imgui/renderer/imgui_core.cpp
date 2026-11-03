@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include "common/path_util.h"
+#include "core/d1_video.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -250,6 +251,7 @@ ImGuiID NewFrame(bool is_reusing_frame) {
         layer->Draw();
     }
 
+    ::Core::D1Video::Draw(); // D1: in-game video controls
     return dockId;
 }
 
@@ -294,7 +296,8 @@ void Render(const vk::CommandBuffer& cmdbuf, const vk::ImageView& image_view,
 }
 
 bool MustKeepDrawing() {
-    return std::ranges::any_of(layers, [](Layer* layer) { return layer->ShouldKeepDrawing(); }) ||
+    return ::Core::D1Video::IsOpen() ||
+           std::ranges::any_of(layers, [](Layer* layer) { return layer->ShouldKeepDrawing(); }) ||
            change_layers.size() > 1;
 }
 

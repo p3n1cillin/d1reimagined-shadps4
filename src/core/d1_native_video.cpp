@@ -4,6 +4,7 @@
 // D1 56578 only. Keep owned decoded tags outside the emulator sources. Their original bytes
 // must match the running client's tag before redirecting its arrays to the candidate's storage.
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -30,6 +31,44 @@ Override string_index, english;
 u32 string_index_tag = 0, english_tag = 0;
 std::mutex label_mutex;
 bool active = false; // set before the guest runs; failed installation leaves every callback inert
+std::atomic<unsigned> lookup_reports{0}, use_reports{0};
+
+std::pair<u64, u64> EntryRange() {
+    const auto field = english.candidate.data() + 0x48;
+    const auto start = reinterpret_cast<u64>(field + 8 + Read<s64>(field + 8) + 16);
+    return {start, start + Read<u64>(field) * 16};
+}
+
+bool IsEntry(u64 address) {
+    const auto [start, end] = EntryRange();
+    return address >= start && address < end && (address - start) % 16 == 0;
+}
+
+// D1: optional bounded diagnostics avoid the GPU exception overhead of attaching a debugger.
+void PS4_SYSV_ABI Lookup(D1DetourRegisters* regs, u64) {
+    if (!active || !english.IsApplied(regs->rsi))
+        return;
+    const bool valid = IsEntry(regs->rax);
+    if ((!valid || lookup_reports.load() < 8) && lookup_reports.fetch_add(1) < 32) {
+        const auto [start, end] = EntryRange();
+        LOG_INFO(Config,
+                 "D1 native video lookup: ordinal {} entry {:#x} range {:#x}..{:#x} valid {}",
+                 regs->rdx / 4, regs->rax, start, end, valid);
+    }
+}
+
+void PS4_SYSV_ABI UseEntry(D1DetourRegisters* regs, u64) {
+    if (!active)
+        return;
+    const auto begin = reinterpret_cast<u64>(english.candidate.data());
+    const auto ptr = regs->r14;
+    if (ptr >= begin && ptr < begin + english.candidate.size() && !IsEntry(ptr) &&
+        use_reports.fetch_add(1) < 8) {
+        const auto [start, end] = EntryRange();
+        LOG_ERROR(Config, "D1 native video entry use: {:#x}, expected {:#x}..{:#x}, offset {:#x}",
+                  ptr, start, end, ptr - begin);
+    }
+}
 
 u64 TagRoot(u32 tag) {
     // D1 56578's inlined tag-manager lookup (9AEA04..52). Preserve its signed slot selection
@@ -127,7 +166,7 @@ void Install() {
             english_tag != Read<u32>(string_index.original.data() + 0x18)) {
             throw std::runtime_error("Native video manifest disagrees with supported option ids");
         }
-        const bool ok =
+        bool ok =
             InstallD1Detour(0xa8be60,
                             std::array<u8, 10>{0x45, 0x31, 0xff, 0x48, 0x8b, 0x82, 0x40, 1, 0, 0},
                             Graph) &&
@@ -137,6 +176,13 @@ void Install() {
                             SettingsRow) &&
             InstallD1Detour(0x9af536, std::array<u8, 5>{0xb8, 0xff, 0xff, 0xff, 0xff}, Get, true) &&
             InstallD1Detour(0x9b040c, std::array<u8, 7>{0x0f, 0xb6, 0x8b, 0xb4, 0, 0, 0}, Set);
+        if (const char* trace = std::getenv("D1_NATIVE_VIDEO_TRACE");
+            ok && trace && std::strcmp(trace, "0") != 0) {
+            ok = InstallD1Detour(0x8d520d, std::array<u8, 5>{0x48, 0x8d, 0x44, 0x81, 0x10}, Lookup,
+                                 true) &&
+                 InstallD1Detour(0x9b6937, std::array<u8, 6>{0x49, 0x8b, 0x06, 0x45, 0x31, 0xff},
+                                 UseEntry);
+        }
         active = ok;
         LOG_INFO(Config, "D1 native video: experimental hooks {} (native UI requires validation)",
                  ok ? "installed" : "incomplete");

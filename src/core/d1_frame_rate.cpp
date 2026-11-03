@@ -10,8 +10,8 @@
 //   the engine clock  [0x26BC880]: +0x04 the ticks a second N (an integer: the game's helpers at
 //                                  0x591BF0-0x591C80 turn seconds into ticks with it, such as a
 //                                  weapon's shot interval), +0x08 the tick period in s (1/N),
-//                                  +0x0C the tick count;
-//   the time scale    [0x26BC888]: +0x04 a base rate over N (1.0 at 30).
+//                                  +0x0C the tick count.
+// The time scale [0x26BC888] +0x04 (1.0) stays as it is: it paces the engine (0.5 halved the ticks).
 // Without +0x04 a weapon kept the start-up rate's ticks: booted at 120, a rifle fired every 16 ticks
 // at any rate, 112 rounds a minute at 30 and 900 at 240.
 // Written live they switch the rate with no restart. Each tick costs CPU, and the engine simulates
@@ -37,7 +37,6 @@ namespace {
 
 constexpr u64 CadencePtr = 0x26BCD08;
 constexpr u64 ClockPtr = 0x26BC880;
-constexpr u64 ScalePtr = 0x26BC888;
 constexpr u32 Uncapped = 1000;
 constexpr u32 Floor = 60;
 
@@ -60,13 +59,7 @@ uintptr_t Pointer(u64 vaddr) {
     return static_cast<uintptr_t>(Read<u64>(MemoryPatcher::g_eboot_address + vaddr));
 }
 
-float g_base_rate = 30.0f; // the time scale's base: scale x ticks a second, read at the first Apply
-
 void Apply(uintptr_t table, uintptr_t clock, u32 rate) {
-    const uintptr_t scale = Pointer(ScalePtr);
-    if (scale != 0) {
-        Write<float>(scale + 0x04, g_base_rate / static_cast<float>(rate));
-    }
     Write<u32>(clock + 0x04, rate);
     Write<u64>(table + 0x08, static_cast<u64>(1001000.0 / rate + 0.5));
     Write<u64>(table + 0x38, rate);
@@ -81,9 +74,6 @@ void Hold() {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         table = Pointer(CadencePtr);
         clock = Pointer(ClockPtr);
-    }
-    if (const uintptr_t scale = Pointer(ScalePtr); scale != 0 && Read<u32>(clock + 0x04) != 0) {
-        g_base_rate = Read<float>(scale + 0x04) * static_cast<float>(Read<u32>(clock + 0x04));
     }
     u32 rate = g_setting == 0 ? Floor : target; // uncapped climbs from 60
     Apply(table, clock, rate);

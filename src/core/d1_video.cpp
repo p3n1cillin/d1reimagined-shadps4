@@ -197,6 +197,9 @@ bool ProcessEvent(const SDL_Event& event) {
         open.store(!open.load());
         return true;
     }
+    if (event.type == SDL_EVENT_KEY_UP && event.key.key == SDLK_F10) {
+        return true; // D1: this hotkey belongs to Video, including its release edge
+    }
     if (IsOpen() && event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) {
         open.store(false);
         return true;
@@ -247,6 +250,9 @@ void Draw() {
                     if (!Save()) {
                         selected_resolution = was;
                     }
+                }
+                if (selected_resolution == i) {
+                    ImGui::SetItemDefaultFocus();
                 }
             }
             ImGui::EndCombo();

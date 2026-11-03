@@ -39,6 +39,17 @@ struct Override {
     std::vector<Field> fields;
     std::mutex mutex;
 
+    // D1: select a complete immutable root for consumers that cache relative descriptors.
+    // Mutating a resident root's relative pointer is unsafe if that header is later copied.
+    u64 Select(u64 address) const {
+        if (address && Read<u64>(reinterpret_cast<const void*>(address)) == original.size() &&
+            std::memcmp(reinterpret_cast<const void*>(address), original.data(), original.size()) ==
+                0) {
+            return reinterpret_cast<u64>(candidate.data());
+        }
+        return address;
+    }
+
     bool IsApplied(u64 address) const {
         const auto* root = reinterpret_cast<const u8*>(address);
         if (!address || Read<u64>(root) != original.size())

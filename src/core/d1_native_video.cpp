@@ -31,6 +31,7 @@ Override string_index, english;
 u32 string_index_tag = 0, english_tag = 0;
 std::mutex label_mutex;
 bool active = false; // set before the guest runs; failed installation leaves every callback inert
+std::atomic<bool> labels_ready{false};
 std::atomic<unsigned> lookup_reports{0}, use_reports{0};
 
 std::pair<u64, u64> EntryRange() {
@@ -56,9 +57,9 @@ void PS4_SYSV_ABI Lookup(D1DetourRegisters* regs, u64) {
         const auto [start, end] = EntryRange();
         LOG_INFO(Config,
                  "D1 native video lookup: ordinal {} entry {:#x} range {:#x}..{:#x} valid {} "
-                 "payload {:#x} applied {} native head {:#x}",
+                 "payload {:#x} candidate {} native head {:#x}",
                  regs->rdx / 4, regs->rax, start, end, valid, regs->rsi,
-                 english.IsApplied(regs->rsi), regs->rcx);
+                 regs->rsi == reinterpret_cast<u64>(english.candidate.data()), regs->rcx);
     }
 }
 
@@ -98,14 +99,44 @@ u64 TagRoot(u32 tag) {
 }
 
 void TryLabels() {
+    if (labels_ready.load())
+        return;
     std::lock_guard lock{label_mutex};
     const auto payload = TagRoot(english_tag), index = TagRoot(string_index_tag);
     if (!payload || !index)
         return;
-    if (english.Apply(payload))
-        LOG_INFO(Config, "D1 native video: English labels redirected");
-    if (english.IsApplied(payload) && string_index.Apply(index)) {
-        LOG_INFO(Config, "D1 native video: label index redirected");
+    if (english.Select(payload) != payload && string_index.Select(index) != index &&
+        !labels_ready.exchange(true)) {
+        LOG_INFO(Config,
+                 "D1 native video: original English library verified; lookup selection ready");
+    }
+}
+
+bool TargetIndex(u64 address) {
+    TryLabels();
+    return labels_ready.load() &&
+           (address == reinterpret_cast<u64>(string_index.candidate.data()) ||
+            address == TagRoot(string_index_tag));
+}
+
+void PS4_SYSV_ABI SelectLookup(D1DetourRegisters* regs, u64) {
+    if (active && TargetIndex(regs->rdi)) {
+        // D1: this opt-in candidate supplies English only. Select both complete roots together,
+        // including when the caller carries a cached language header, without mutating that cache.
+        regs->rdi = reinterpret_cast<u64>(string_index.candidate.data());
+        regs->rsi = reinterpret_cast<u64>(english.candidate.data());
+    }
+}
+
+void PS4_SYSV_ABI SelectTextIndex(D1DetourRegisters* regs, u64) {
+    if (active && TargetIndex(regs->rdi))
+        regs->rdi = reinterpret_cast<u64>(string_index.candidate.data());
+}
+
+void PS4_SYSV_ABI SelectTextPayload(D1DetourRegisters* regs, u64) {
+    if (active && labels_ready.load() &&
+        regs->r15 == reinterpret_cast<u64>(string_index.candidate.data())) {
+        regs->r11 = reinterpret_cast<u64>(english.candidate.data());
     }
 }
 
@@ -180,7 +211,14 @@ void Install() {
             InstallD1Detour(0x9af328, std::array<u8, 7>{0x48, 0x8b, 0x41, 0x20, 0x48, 0x85, 0xc0},
                             SettingsRow) &&
             InstallD1Detour(0x9af536, std::array<u8, 5>{0xb8, 0xff, 0xff, 0xff, 0xff}, Get, true) &&
-            InstallD1Detour(0x9b040c, std::array<u8, 7>{0x0f, 0xb6, 0x8b, 0xb4, 0, 0, 0}, Set);
+            InstallD1Detour(0x9b040c, std::array<u8, 7>{0x0f, 0xb6, 0x8b, 0xb4, 0, 0, 0}, Set) &&
+            InstallD1Detour(0x8d5170, std::array<u8, 5>{0x53, 0x48, 0x8b, 0x47, 0x10},
+                            SelectLookup) &&
+            InstallD1Detour(0x8d5220, std::array<u8, 6>{0x55, 0x48, 0x89, 0xe5, 0x41, 0x57},
+                            SelectTextIndex) &&
+            InstallD1Detour(0x8d534c,
+                            std::array<u8, 8>{0x49, 0x8d, 0x4b, 0x50, 0x49, 0x03, 0x4b, 0x50},
+                            SelectTextPayload);
         if (const char* trace = std::getenv("D1_NATIVE_VIDEO_TRACE");
             ok && trace && std::strcmp(trace, "0") != 0) {
             ok = InstallD1Detour(0x8d520d, std::array<u8, 5>{0x48, 0x8d, 0x44, 0x81, 0x10}, Lookup,

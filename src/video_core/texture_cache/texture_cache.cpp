@@ -21,6 +21,8 @@
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
 
+#include <unordered_set>
+
 namespace VideoCore {
 
 // D1 diagnostics: D1_TRACE_IMAGE=<hex address> traces lookups, creation, expansion and freeing
@@ -35,6 +37,24 @@ static VAddr D1TraceAddr() {
 static bool D1Traced(VAddr addr) {
     static u32 n = 0;
     return D1TraceAddr() && addr == D1TraceAddr() && g_d1_dump_live.load() && ++n < 3000;
+}
+
+// D1 diagnostics: D1_TRACE_WIDTH=<n> logs (at error level, past the lab filter), once per guest
+// address, every new image n texels wide
+// (the render-size work: which images stay 2048 wide when the game renders wider).
+static void D1TraceWidth(const ImageInfo& info) {
+    static const u32 w = [] {
+        const char* v = std::getenv("D1_TRACE_WIDTH");
+        return v ? static_cast<u32>(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    static std::unordered_set<VAddr> seen;
+    if (w == 0 || info.size.width != w || !seen.insert(info.guest_address).second) {
+        return;
+    }
+    LOG_ERROR(Render_Vulkan, "D1 width {}: {:#x} type {} {}x{}x{} pitch {} format {} tiling {} L{} M{}",
+                w, info.guest_address, u32(info.type), info.size.width, info.size.height,
+                info.size.depth, info.pitch, u32(info.pixel_format), u32(info.tile_mode),
+                info.resources.layers, info.resources.levels);
 }
 
 static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
@@ -752,6 +772,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     if (!image_id) {
         image_id = slot_images.Insert(instance, runtime, slot_image_views, info);
         RegisterImage(image_id);
+        D1TraceWidth(info);
         if (D1Traced(info.guest_address)) {
             LOG_WARNING(Render_Vulkan, "D1 trace new #{} type {} {}x{}x{} L{} (from guest memory)",
                         image_id.index, u32(info.type), info.size.width, info.size.height,

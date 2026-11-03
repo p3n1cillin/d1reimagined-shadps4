@@ -210,21 +210,28 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
-    // D1: feed ImGui even while the Video panel consumes game input (release events pass through).
-    if (Core::D1Video::ProcessEvent(event)) {
-        ImGui::Core::ProcessEvent(&event);
-        if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION ||
-            event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-            // D1: maintain physical state while libScePad returns neutral to the guest.
-            OnGamepadEvent(&event);
+    const bool d1_video = Core::D1Video::IsEnabled();
+    if (d1_video) {
+        // D1: ImGui must see BOTH edges before the raw keyboard library can consume an event.
+        // Feeding only the panel's consumed key-downs left Space/Enter stuck in ImGui, so a combo
+        // opened once but could not select a value on the second press. Releases still reach the
+        // raw keyboard and regular pad bindings; libScePad is neutral while the panel is open.
+        const bool video_consumed = Core::D1Video::ProcessEvent(event);
+        const bool imgui_consumed = ImGui::Core::ProcessEvent(&event);
+        if (video_consumed || imgui_consumed) {
+            if (Core::D1Video::IsOpen() && (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION ||
+                                            event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                                            event.type == SDL_EVENT_GAMEPAD_BUTTON_UP)) {
+                OnGamepadEvent(&event);
+            }
+            return;
         }
-        return;
     }
     if (Libraries::Mouse::PushSDLEvent(event) || Libraries::Keyboard::PushSDLEvent(event)) {
         return;
     }
 
-    if (ImGui::Core::ProcessEvent(&event)) {
+    if (!d1_video && ImGui::Core::ProcessEvent(&event)) {
         return;
     }
 

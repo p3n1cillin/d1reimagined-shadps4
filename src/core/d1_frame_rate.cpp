@@ -180,7 +180,7 @@ void Hold() {
 // ticks held counted up to 15 (0x6F4605). A fresh press also arms a 10-tick buffer (0x6F3C9F). All of
 // it assumes 30 ticks a second: at 60 the boost came twice as fast, and a 100-200 ms press jumped
 // 15-19% higher than on PS4. At N ticks a second the detours count up to 15 N/30 and arm 10 N/30,
-// take t at the 30 Hz tick the moment falls in (ceil(ticks x 30/N) / 15, so the curve is sampled as
+// take t at the 30 Hz tick the moment falls in (floor(ticks x 30/N) / 15, so the curve is sampled as
 // on PS4) and scale each tick's boost by 30/N; the takeoff impulse is left as it is.
 constexpr u64 JumpTimeTakeoff = 0x6F5A32; // after vdivss xmm1, count, [15.0] (takeoff path)
 constexpr u64 JumpTimeHeld = 0x6F5B04;    // the same, held path
@@ -215,7 +215,7 @@ s32 Ticks(s32 ticks_at_30, float step) {
 void PS4_SYSV_ABI ScaleJumpTime(D1DetourRegisters* regs, u64) {
     float* t = SavedXmm(regs, 1); // ticks held / 15
     const float step = StepScale();
-    *t = std::ceil(*t * 15.0f * step - 1e-3f) / 15.0f;
+    *t = std::floor(*t * 15.0f * step + 1e-3f) / 15.0f;
 }
 
 void PS4_SYSV_ABI CapJumpCount(D1DetourRegisters* regs, u64) {

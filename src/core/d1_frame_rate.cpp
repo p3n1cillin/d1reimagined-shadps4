@@ -35,6 +35,7 @@
 #include "core/cpu_patches.h"
 #include "core/d1_frame_rate.h"
 #include "core/d1_video.h"
+#include "core/d1_jump_timing.h"
 
 namespace Core::D1FrameRate {
 
@@ -212,7 +213,8 @@ void Hold() {
 // of it assumes 30 ticks a second: at 60 the boost came twice as fast, and a 100-200 ms press
 // jumped 15-19% higher than on PS4. At N ticks a second the detours count up to 15 N/30 and arm 10
 // N/30, take t at the 30 Hz tick the moment falls in (floor(ticks x 30/N) / 15, so the curve is
-// sampled as on PS4) and scale each tick's boost by 30/N; the takeoff impulse is left as it is.
+// sampled as on PS4). Apply that boost once at each 30 Hz boundary: spreading it over subticks
+// delays its position contribution and changes short holds. The takeoff impulse is kept.
 constexpr u64 JumpTimeTakeoff = 0x6F5A32; // after vdivss xmm1, count, [15.0] (takeoff path)
 constexpr u64 JumpTimeHeld = 0x6F5B04;    // the same, held path
 constexpr std::array<u8, 6> JumpTimeSpan = {0x81, 0xCA, 0xFF, 0x03, 0x00, 0x00}; // or edx, 0x3ff
@@ -282,7 +284,6 @@ void PS4_SYSV_ABI ArmJumpBuffer(D1DetourRegisters* regs, u64) {
 }
 
 void PS4_SYSV_ABI ScaleTakeoffBoost(D1DetourRegisters* regs, u64) {
-    *SavedXmm(regs, 0) *= StepScale();
     // D1 56578: preserve the PS4 integrator's initial half-step. For constant gravity a jump
     // integrated at dt has a peak v^2/(2g) + v*dt/2. Advancing the launch velocity by
     // g*(dt30-dt)/2 restores that half-step at higher rates, without accumulating a new force
@@ -293,7 +294,9 @@ void PS4_SYSV_ABI ScaleTakeoffBoost(D1DetourRegisters* regs, u64) {
     const u32 n = clock != 0 ? Read<u32>(clock + 0x04) : 0;
     const uintptr_t gravity = Pointer(0x2647D10);
     if (n > 30 && gravity != 0) {
-        const float g = Read<float>(gravity) * Read<float>(gravity + 0x10);
+        const float gravity_scale = Read<float>(gravity + 0x10);
+        // 0x6F5B88 multiplies the final boost by sqrt(gravity_scale), so account for it here.
+        const float g = Read<float>(gravity) * std::sqrt(gravity_scale);
         if (std::isfinite(g) && g >= 0.0f) {
             *SavedXmm(regs, 0) += g * (1.0f / 30.0f - 1.0f / static_cast<float>(n)) * 0.5f;
         }
@@ -306,7 +309,14 @@ void PS4_SYSV_ABI ScaleHeldBoost(D1DetourRegisters* regs, u64) {
         g_takeoff_scaled = false;
         return;
     }
-    *SavedXmm(regs, 0) *= StepScale();
+    // r13 is the native controller in 0x6F58A0; +0x1C0 is its held-tick count. The curve has
+    // already been sampled at floor(held*30/N), so only its first subtick supplies the impulse.
+    const uintptr_t clock = Pointer(ClockPtr);
+    const u32 n = clock != 0 ? Read<u32>(clock + 0x04) : 0;
+    const s32 held = Read<s32>(static_cast<uintptr_t>(regs->r13) + 0x1C0);
+    if (!JumpImpulseDue(held, n)) {
+        *SavedXmm(regs, 0) = 0.0f;
+    }
 }
 
 void WriteTickImmediates(u32 n) {

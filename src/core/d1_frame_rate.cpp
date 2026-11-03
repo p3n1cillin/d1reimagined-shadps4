@@ -34,6 +34,7 @@
 #include "common/memory_patcher.h"
 #include "core/cpu_patches.h"
 #include "core/d1_frame_rate.h"
+#include "core/d1_native_video.h"
 #include "core/d1_video.h"
 #include "core/d1_jump_timing.h"
 
@@ -412,7 +413,9 @@ void InstallRateRules() {
 } // namespace
 
 void Install() {
-    D1Video::Install(); // before wide-view checks and before any guest renderer allocations
+    D1Video::Install();       // before wide-view checks and before any guest renderer allocations
+    D1NativeVideo::Install(); // opt-in, exact decoded-content comparison before changing root
+                              // arrays
     InstallRateRules();
     InstallWideViews();
     if (g_setting.load() < 0) {

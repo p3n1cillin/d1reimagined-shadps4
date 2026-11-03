@@ -13,5 +13,8 @@ void Draw();
 bool ProcessEvent(const SDL_Event& event);
 bool IsOpen();
 bool IsEnabled();
+// D1: native cycling rows use the same persistence and live rate writer as the panel.
+int GetNativeOption(unsigned id);
+bool SetNativeOption(unsigned id, int value);
 
 } // namespace Core::D1Video

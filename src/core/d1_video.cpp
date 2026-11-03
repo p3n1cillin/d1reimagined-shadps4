@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <SDL3/SDL_events.h>
 #include <imgui.h>
 
@@ -27,6 +28,7 @@
 namespace Core::D1Video {
 namespace {
 std::atomic<bool> enabled{false}, open{false};
+std::mutex settings_mutex;
 int selected_rate = 30;
 int selected_resolution = 0;
 int running_resolution = 0;
@@ -189,6 +191,41 @@ bool IsEnabled() {
     return enabled.load(std::memory_order_relaxed);
 }
 
+int GetNativeOption(unsigned id) {
+    std::lock_guard lock{settings_mutex};
+    if (!IsEnabled()) {
+        return -1;
+    }
+    if (id == 21) { // D1 56578's original option ids end at 20
+        const auto it = std::find(Rates.begin(), Rates.end(), selected_rate);
+        return it == Rates.end() ? -1 : static_cast<int>(it - Rates.begin());
+    }
+    return id == 22 ? selected_resolution : -1;
+}
+
+bool SetNativeOption(unsigned id, int value) {
+    std::lock_guard lock{settings_mutex};
+    if (!IsEnabled() || value < 0 || (id != 21 && id != 22) ||
+        value >= static_cast<int>(id == 21 ? Rates.size() : Resolutions.size())) {
+        return false;
+    }
+    const int old_rate = selected_rate, old_resolution = selected_resolution;
+    if (id == 21) {
+        selected_rate = Rates[value];
+    } else {
+        selected_resolution = value;
+    }
+    if (!Save()) {
+        selected_rate = old_rate;
+        selected_resolution = old_resolution;
+        return false;
+    }
+    if (id == 21) {
+        D1FrameRate::SetRate(selected_rate);
+    }
+    return true;
+}
+
 bool ProcessEvent(const SDL_Event& event) {
     if (!enabled.load()) {
         return false;
@@ -216,6 +253,7 @@ void Draw() {
     if (!enabled.load() || !IsOpen()) {
         return;
     }
+    std::lock_guard lock{settings_mutex};
     ImGui::SetNextWindowSize(ImVec2(470, 250), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowCollapsed(false, ImGuiCond_Appearing);
     bool visible = true;

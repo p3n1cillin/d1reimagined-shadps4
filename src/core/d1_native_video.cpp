@@ -152,13 +152,11 @@ void PS4_SYSV_ABI Graph(D1DetourRegisters* regs, u64) {
 void PS4_SYSV_ABI SelectGraph(D1DetourRegisters* regs, u64) {
     if (!active)
         return;
-    const auto selected = graph.Select(regs->rdi);
-    if (selected != regs->rdi) {
-        // D1: select before imports, component construction and property registration. The
-        // binding pass alone is too late to introduce a new dynamic options-group property.
-        regs->rdi = selected;
+    if (graph.Apply(regs->rdi)) {
+        // D1: prepare before imports, component construction and property registration, retaining
+        // the guest root identity used by the graph context. The binding pass alone is too late.
         if (!graph_selected.exchange(true))
-            LOG_INFO(Config, "D1 native video: graph selected before component construction");
+            LOG_INFO(Config, "D1 native video: graph arrays ready before component construction");
     }
 }
 void PS4_SYSV_ABI SettingsGroup(D1DetourRegisters* regs, u64) {

@@ -34,6 +34,7 @@
 #include "common/memory_patcher.h"
 #include "core/cpu_patches.h"
 #include "core/d1_frame_rate.h"
+#include "core/d1_video.h"
 
 namespace Core::D1FrameRate {
 
@@ -47,7 +48,7 @@ constexpr u32 Uncapped = 1000;
 constexpr u32 Floor = 30;
 constexpr u32 UncappedStart = 60;
 
-int g_setting = -1; // -1: off
+std::atomic<int> g_setting{-1}; // -1: off
 std::atomic<u64> g_flips{0};
 
 template <typename T>
@@ -75,7 +76,8 @@ void Apply(uintptr_t table, uintptr_t clock, u32 rate) {
 }
 
 void Hold() {
-    const u32 target = g_setting == 0 ? Uncapped : static_cast<u32>(g_setting);
+    int setting = g_setting.load();
+    u32 target = setting == 0 ? Uncapped : static_cast<u32>(setting);
     uintptr_t table = 0, clock = 0;
     while (table == 0 || clock == 0 || Read<u64>(table + 0x38) == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -84,7 +86,7 @@ void Hold() {
     }
     u32 rate = g_setting == 0 ? UncappedStart : target; // uncapped climbs from 60
     Apply(table, clock, rate);
-    LOG_INFO(Lib_VideoOut, "D1_FPS: holding {} (setting {})", rate, g_setting);
+    LOG_INFO(Lib_VideoOut, "D1_FPS: holding {} (setting {})", rate, setting);
     u32 last_ticks = Read<u32>(clock + 0x0C);
     u64 last_flips = g_flips.load();
     int follow = 0;
@@ -107,6 +109,21 @@ void Hold() {
             continue;
         }
         const auto now = std::chrono::steady_clock::now();
+        if (const int requested = g_setting.load(); requested != setting) {
+            setting = requested;
+            target = setting == 0 ? Uncapped : static_cast<u32>(setting);
+            rate = setting == 0 ? UncappedStart : target;
+            ceiling = target + 1;
+            probe_limit = Uncapped + 1;
+            ceiling_set = probe_limit_set = now;
+            slow = real = follow = 0;
+            Apply(table, clock, rate);
+            last_ticks = Read<u32>(clock + 0x0C);
+            last_flips = g_flips.load();
+            last = now;
+            LOG_INFO(Lib_VideoOut, "D1_FPS: live setting {} (holding {})", setting, rate);
+            continue;
+        }
         const u32 ticks = Read<u32>(clock + 0x0C);
         const double seconds = std::chrono::duration<double>(now - last).count();
         // Game time per second: the ticks taken times each tick's length. 1.0 is real time.
@@ -385,19 +402,24 @@ void InstallRateRules() {
 } // namespace
 
 void Install() {
+    D1Video::Install(); // before wide-view checks and before any guest renderer allocations
     InstallRateRules();
     InstallWideViews();
-    const char* s = std::getenv("D1_FPS");
-    if (s == nullptr || *s == '\0') {
-        return;
+    if (g_setting.load() < 0) {
+        const char* s = std::getenv("D1_FPS");
+        if (s != nullptr && *s != '\0') {
+            SetRate(std::atoi(s));
+        }
     }
-    const int n = std::atoi(s);
-    if (n != 0 && (n < 10 || n > 1000)) {
-        LOG_ERROR(Lib_VideoOut, "D1_FPS={} is outside 10..1000 (0 is uncapped); ignored", s);
-        return;
+    if (g_setting.load() >= 0) {
+        std::thread(Hold).detach();
     }
-    g_setting = n;
-    std::thread(Hold).detach();
+}
+
+void SetRate(int fps) {
+    if (fps == 0 || (fps >= 10 && fps <= 1000)) {
+        g_setting.store(fps);
+    }
 }
 
 void NoteFlip() {
@@ -405,6 +427,12 @@ void NoteFlip() {
 }
 
 u32 VblankOverride() {
+    // The presenter starts before patches are installed. D1 Video needs headroom for every live
+    // choice; its game cadence still limits presentation. D1_VIDEO=0 retains the env-only mode.
+    const char* video = std::getenv("D1_VIDEO");
+    if (MemoryPatcher::g_game_serial == "CUSA00219" && !(video && std::strcmp(video, "0") == 0)) {
+        return 500;
+    }
     // The vblank at the target rate (500 uncapped): fast enough never to hold the rate back,
     // without running the presenter at 1000 Hz for nothing.
     const char* s = std::getenv("D1_FPS");

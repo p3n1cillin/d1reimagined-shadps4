@@ -2,39 +2,44 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // D1 (CUSA00219, executable 56578): the engine's own keyboard/mouse layer, fed from the host.
-// The menu cursor update at 0x985D00 (01.29 0x984060; the span `mov ebx,[r15+0x210]`, followed by the
-// elapsed-ms subtract and the call to the mouse getter 0xAD670) runs once a frame while a cursor
-// exists, with the UI root in r15 and the cursor position as floats at +0x350/+0x354.
+// The menu cursor update at 0x985D00 (01.29 0x984060; the span `mov ebx,[r15+0x210]`, followed by
+// the elapsed-ms subtract and the call to the mouse getter 0xAD670) runs once a frame while a
+// cursor exists, with the UI root in r15 and the cursor position as floats at +0x350/+0x354.
 //   D1_MOUSE_PROBE=1   log the UI root and cursor position at the first hits; change nothing.
 //   D1_MOUSE_CURSOR=1  move the cursor by the host mouse's movement since the last frame, while the
 //                      game window has focus (Windows; D1_MOUSE_SENS scales it, default 1: the
 //                      engine adds mouse counts to the cursor unscaled).
 //   D1_MOUSE_LOOK=1    also mouse look in gameplay (implies the cursor): at the look site 0x91C7DC
 //                      (01.29 0x91AB3C, span `mov [rbp-0x320],rbx`), when r13 is player 0's input
-//                      record (base+0x273EFE0), the mouse movement is added to the record's look rates
-//                      (+0x2CC yaw, +0x2D4 pitch) scaled by the frame's dt at [rbp-0x2DC]. This is the
-//                      01.29 implementation's fallback route. While no menu cursor is active the PC
-//                      cursor is re-centred in the game window, so it moves the system cursor:
-//                      opt in only.
+//                      record (base+0x273EFE0), the mouse movement is added to the record's look
+//                      rates
+//                      (+0x2CC yaw, +0x2D4 pitch) scaled by the frame's dt at [rbp-0x2DC]. This is
+//                      the 01.29 implementation's fallback route. While no menu cursor is active
+//                      the PC cursor is re-centred in the game window, so it moves the system
+//                      cursor: opt in only.
 //   D1_MOUSE_BUTTONS=1 mouse buttons merged into player 0's controls after pad selection (0x9284EF,
 //                      01.29 0x92684F): in menus LMB = cross, RMB = circle; in gameplay LMB = R2
-//                      (fire), RMB = L2 (aim), middle = R3 (melee), Mouse4 = square, Mouse5 = circle.
+//                      (fire), RMB = L2 (aim), middle = R3 (melee), Mouse4 = square, Mouse5 =
+//                      circle.
 //   D1_KBM=1           the engine's own PC keyboard layer: at the KBM builder entry 0x926965 (01.29
-//                      0x924CC5, right after 0xAD120 clears the blocks) the 104 keys are written, in the
-//                      engine's order, to the key table that follows the mouse state at 0x1AD4860, and
-//                      the mouse-enable byte 0x1AD40D3 is set, so the engine reads the keyboard with its
-//                      own bindings. Mouse counts stay zero (look goes through D1_MOUSE_LOOK).
-//   D1_KBM_MAP=R=E,1=R  rebinds the layer: each HOST=ENGINE pair makes the host key press that engine
-//                      key instead of its own (names as in EngineKeyNames, any case). The engine's keys
-//                      are a developer layout (builder 0x926910): Space = cross, Q = circle, E = square
-//                      (reload / interact), R = triangle (weapon), T / G = d-pad up / down, End = L2,
-//                      Ins = R2, PgDn / PgUp = controls 6 / 7, Z = 8, B = R3, WASD move, arrows look.
+//                      0x924CC5, right after 0xAD120 clears the blocks) the 104 keys are written,
+//                      in the engine's order, to the key table that follows the mouse state at
+//                      0x1AD4860, and the mouse-enable byte 0x1AD40D3 is set, so the engine reads
+//                      the keyboard with its own bindings. Mouse counts stay zero (look goes
+//                      through D1_MOUSE_LOOK).
+//   D1_KBM_MAP=R=E,1=R  rebinds the layer: each HOST=ENGINE pair makes the host key press that
+//   engine
+//                      key instead of its own (names as in EngineKeyNames, any case). The engine's
+//                      keys are a developer layout (builder 0x926910): Space = cross, Q = circle, E
+//                      = square (reload / interact), R = triangle (weapon), T / G = d-pad up /
+//                      down, End = L2, Ins = R2, PgDn / PgUp = controls 6 / 7, Z = 8, B = R3, WASD
+//                      move, arrows look.
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cmath>
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -48,6 +53,7 @@
 #include "common/memory_patcher.h"
 #include "core/cpu_patches.h"
 #include "core/d1_native_mouse.h"
+#include "core/d1_video.h"
 
 namespace Core::D1NativeMouse {
 
@@ -70,7 +76,7 @@ std::atomic<u64> g_cursor_tick{0};
 
 constexpr u64 ActionsSite = 0x9284EF;
 constexpr std::array<u8, 5> ActionsSpan = {0xE8, 0x4C, 0x4C, 0x78, 0xFF}; // call 0xAD140
-constexpr size_t ActionStride = 20;                                        // 21 controls
+constexpr size_t ActionStride = 20;                                       // 21 controls
 
 struct Key {
     u16 held_ms{};
@@ -78,29 +84,40 @@ struct Key {
 };
 
 constexpr u64 KbmSite = 0x926965;
-constexpr std::array<u8, 7> KbmSpan = {0x48, 0x8D, 0x05, 0xD4, 0x83, 0xE1, 0x01}; // lea rax,[0x273ED40]
-constexpr u64 MouseState = 0x1AD4860; // 24-byte mouse block, then 104 x {u16 held_ms, u8 frames, u8 flags}
+constexpr std::array<u8, 7> KbmSpan = {0x48, 0x8D, 0x05, 0xD4,
+                                       0x83, 0xE1, 0x01}; // lea rax,[0x273ED40]
+constexpr u64 MouseState =
+    0x1AD4860; // 24-byte mouse block, then 104 x {u16 held_ms, u8 frames, u8 flags}
 constexpr u64 MouseEnableByte = 0x1AD40D3;
 // The engine's key order (Xbox 56578's table; 01.29's queries agree: WASD = 0x20/0x2D/0x2E/0x2F,
 // arrows 0x4D..0x50, space 0x48), as Windows virtual keys.
 constexpr std::array<u16, 104> EngineKeys = {
-    VK_ESCAPE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
-    VK_F13, VK_SCROLL, VK_F15, VK_OEM_3, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', VK_OEM_MINUS,
-    VK_OEM_PLUS, VK_BACK, VK_TAB, 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', VK_OEM_4, VK_OEM_6,
-    VK_OEM_5, VK_CAPITAL, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', VK_OEM_1, VK_OEM_7, VK_RETURN,
-    VK_LSHIFT, 'Z', 'X', 'C', 'V', 'B', 'N', 'M', VK_OEM_COMMA, VK_OEM_PERIOD, VK_OEM_2, VK_RSHIFT,
-    VK_LCONTROL, VK_LWIN, VK_LMENU, VK_SPACE, VK_RMENU, VK_RWIN, VK_APPS, VK_RCONTROL, VK_UP, VK_DOWN,
-    VK_LEFT, VK_RIGHT, VK_INSERT, VK_HOME, VK_PRIOR, VK_DELETE, VK_END, VK_NEXT, VK_NUMLOCK, VK_DIVIDE,
-    VK_MULTIPLY, VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6,
-    VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9, VK_SUBTRACT, VK_ADD, VK_RETURN, VK_DECIMAL};
+    VK_ESCAPE,   VK_F1,      VK_F2,        VK_F3,         VK_F4,      VK_F5,       VK_F6,
+    VK_F7,       VK_F8,      VK_F9,        VK_F10,        VK_F11,     VK_F12,      VK_F13,
+    VK_SCROLL,   VK_F15,     VK_OEM_3,     '1',           '2',        '3',         '4',
+    '5',         '6',        '7',          '8',           '9',        '0',         VK_OEM_MINUS,
+    VK_OEM_PLUS, VK_BACK,    VK_TAB,       'Q',           'W',        'E',         'R',
+    'T',         'Y',        'U',          'I',           'O',        'P',         VK_OEM_4,
+    VK_OEM_6,    VK_OEM_5,   VK_CAPITAL,   'A',           'S',        'D',         'F',
+    'G',         'H',        'J',          'K',           'L',        VK_OEM_1,    VK_OEM_7,
+    VK_RETURN,   VK_LSHIFT,  'Z',          'X',           'C',        'V',         'B',
+    'N',         'M',        VK_OEM_COMMA, VK_OEM_PERIOD, VK_OEM_2,   VK_RSHIFT,   VK_LCONTROL,
+    VK_LWIN,     VK_LMENU,   VK_SPACE,     VK_RMENU,      VK_RWIN,    VK_APPS,     VK_RCONTROL,
+    VK_UP,       VK_DOWN,    VK_LEFT,      VK_RIGHT,      VK_INSERT,  VK_HOME,     VK_PRIOR,
+    VK_DELETE,   VK_END,     VK_NEXT,      VK_NUMLOCK,    VK_DIVIDE,  VK_MULTIPLY, VK_NUMPAD0,
+    VK_NUMPAD1,  VK_NUMPAD2, VK_NUMPAD3,   VK_NUMPAD4,    VK_NUMPAD5, VK_NUMPAD6,  VK_NUMPAD7,
+    VK_NUMPAD8,  VK_NUMPAD9, VK_SUBTRACT,  VK_ADD,        VK_RETURN,  VK_DECIMAL};
 constexpr std::array<const char*, 104> EngineKeyNames = {
-    "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "ScrLk",
-    "F15", "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Back", "Tab", "Q", "W",
-    "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "Caps", "A", "S", "D", "F", "G", "H", "J",
-    "K", "L", ";", "'", "Enter", "LShift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "RShift",
-    "LCtrl", "LWin", "LAlt", "Space", "RAlt", "RWin", "Apps", "RCtrl", "Up", "Down", "Left", "Right",
-    "Ins", "Home", "PgUp", "Del", "End", "PgDn", "NumLk", "Num/", "Num*", "Num0", "Num1", "Num2",
-    "Num3", "Num4", "Num5", "Num6", "Num7", "Num8", "Num9", "Num-", "Num+", "NumEnter", "Num."};
+    "Esc",  "F1",    "F2",     "F3",       "F4",   "F5",   "F6",    "F7",   "F8",   "F9",   "F10",
+    "F11",  "F12",   "F13",    "ScrLk",    "F15",  "`",    "1",     "2",    "3",    "4",    "5",
+    "6",    "7",     "8",      "9",        "0",    "-",    "=",     "Back", "Tab",  "Q",    "W",
+    "E",    "R",     "T",      "Y",        "U",    "I",    "O",     "P",    "[",    "]",    "\\",
+    "Caps", "A",     "S",      "D",        "F",    "G",    "H",     "J",    "K",    "L",    ";",
+    "'",    "Enter", "LShift", "Z",        "X",    "C",    "V",     "B",    "N",    "M",    ",",
+    ".",    "/",     "RShift", "LCtrl",    "LWin", "LAlt", "Space", "RAlt", "RWin", "Apps", "RCtrl",
+    "Up",   "Down",  "Left",   "Right",    "Ins",  "Home", "PgUp",  "Del",  "End",  "PgDn", "NumLk",
+    "Num/", "Num*",  "Num0",   "Num1",     "Num2", "Num3", "Num4",  "Num5", "Num6", "Num7", "Num8",
+    "Num9", "Num-",  "Num+",   "NumEnter", "Num."};
 // The host keys that press each engine key: itself, unless D1_KBM_MAP moves it.
 std::array<std::vector<u16>, 104> g_key_sources;
 
@@ -116,15 +133,15 @@ void PS4_SYSV_ABI ProbeCursor(D1DetourRegisters* regs, u64 site) {
     }
     float xy[2]{};
     std::memcpy(xy, reinterpret_cast<const void*>(regs->r15 + 0x350), sizeof(xy));
-    LOG_INFO(Input, "D1 mouse probe: cursor site {:#x} hit {}: UI root {:#x}, cursor ({}, {})", site,
-             n + 1, regs->r15, xy[0], xy[1]);
+    LOG_INFO(Input, "D1 mouse probe: cursor site {:#x} hit {}: UI root {:#x}, cursor ({}, {})",
+             site, n + 1, regs->r15, xy[0], xy[1]);
 }
 
 #ifdef _WIN32
 bool GameHasFocus() {
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    return pid == GetCurrentProcessId();
+    return pid == GetCurrentProcessId() && !D1Video::IsOpen(); // D1: overlay owns input
 }
 
 void PS4_SYSV_ABI MoveCursor(D1DetourRegisters* regs, u64) {
@@ -191,8 +208,10 @@ void PS4_SYSV_ABI MouseLook(D1DetourRegisters* regs, u64) {
     if (!(dt > 0.0001f && dt <= 0.25f)) {
         return;
     }
-    const float dx = std::clamp(static_cast<float>(now.x - centre.x), -MaxCountsPerFrame, MaxCountsPerFrame);
-    const float dy = std::clamp(static_cast<float>(now.y - centre.y), -MaxCountsPerFrame, MaxCountsPerFrame);
+    const float dx =
+        std::clamp(static_cast<float>(now.x - centre.x), -MaxCountsPerFrame, MaxCountsPerFrame);
+    const float dy =
+        std::clamp(static_cast<float>(now.y - centre.y), -MaxCountsPerFrame, MaxCountsPerFrame);
     if (dx == 0.0f && dy == 0.0f) {
         return; // an idle mouse leaves the stick's look alone
     }
@@ -208,7 +227,8 @@ void PS4_SYSV_ABI MouseLook(D1DetourRegisters* regs, u64) {
 std::array<Key, 5> SampleButtons() {
     static std::array<u64, 5> down_since{};
     static std::array<u8, 5> frames{};
-    static constexpr std::array<int, 5> vk{VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
+    static constexpr std::array<int, 5> vk{VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1,
+                                           VK_XBUTTON2};
     std::array<Key, 5> out{};
     const bool focus = GameHasFocus();
     const u64 now = GetTickCount64();
@@ -308,7 +328,8 @@ int KeyIndex(const std::string& name) {
     return -1;
 }
 
-/// Each engine key starts pressed by its own host key; D1_KBM_MAP's HOST=ENGINE pairs move a host key.
+/// Each engine key starts pressed by its own host key; D1_KBM_MAP's HOST=ENGINE pairs move a host
+/// key.
 void LoadKeyMap() {
     for (size_t i = 0; i < EngineKeys.size(); ++i) {
         g_key_sources[i] = {EngineKeys[i]};

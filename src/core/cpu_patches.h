@@ -68,7 +68,9 @@ using D1DetourCallback = void(PS4_SYSV_ABI*)(D1DetourRegisters* regs, u64 site_v
 /// without the 0x400000 bias). Refuses, returning false, unless the bytes there equal `span`, the
 /// instructions covering at least a near jump decode and relocate, and the module has trampoline
 /// space. Call before the guest runs the site (e.g. right after the game's patches are applied).
-bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback callback);
+/// callback_after runs the displaced instructions first, so a callback can adjust their result.
+bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback callback,
+                     bool callback_after = false);
 
 // Windows static guest red-zone protection
 /// Keeps Windows exception dispatch outside live guest red zones at faultable memory accesses.

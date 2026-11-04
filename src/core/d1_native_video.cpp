@@ -116,25 +116,32 @@ void TryLabels() {
     }
 }
 
-void PS4_SYSV_ABI ResolveVideoText(D1DetourRegisters* regs, u64) {
+void ResolveVideoLibrary(u8* field) {
     if (!active)
         return;
-    auto* text = reinterpret_cast<u8*>(regs->rbx);
-    const auto hash = Read<u32>(text + 0x9c);
-    if (hash < first_video_label || hash > last_video_label ||
-        Read<u32>(text + 0x98) != 0xffffffff) {
+    const auto hash = Read<u32>(field + 4);
+    if (hash < first_video_label || hash > last_video_label || Read<u32>(field) != 0xffffffff) {
         return;
     }
     // D1: authored video hashes have no entry in the game's original library routing.
     // Supply their verified library before the formatter rejects the unresolved tag.
     TryLabels();
     if (labels_ready.load()) {
-        std::memcpy(text + 0x98, &string_index_tag, sizeof string_index_tag);
+        std::memcpy(field, &string_index_tag, sizeof string_index_tag);
         if (trace_video_text && video_text_reports.fetch_add(1) < 24) {
             LOG_INFO(Config, "D1 native video text: hash {:#x} assigned to library {:#x}", hash,
                      string_index_tag);
         }
     }
+}
+
+void PS4_SYSV_ABI ResolveVideoText(D1DetourRegisters* regs, u64) {
+    ResolveVideoLibrary(reinterpret_cast<u8*>(regs->rbx) + 0x98);
+}
+
+void PS4_SYSV_ABI ResolveVideoArgument(D1DetourRegisters* regs, u64) {
+    // D1: the formatter's 0xc0-byte nested arguments store the same library/hash pair at +0xa8.
+    ResolveVideoLibrary(reinterpret_cast<u8*>(regs->rbx) - 8);
 }
 
 bool TargetIndex(u64 address) {
@@ -281,7 +288,10 @@ void Install() {
                             std::array<u8, 8>{0x49, 0x8d, 0x4b, 0x50, 0x49, 0x03, 0x4b, 0x50},
                             SelectTextPayload) &&
             InstallD1Detour(0x9b66c6, std::array<u8, 7>{0x83, 0xbb, 0x98, 0, 0, 0, 0xff},
-                            ResolveVideoText);
+                            ResolveVideoText) &&
+            InstallD1Detour(0x9b67b3,
+                            std::array<u8, 8>{0x8b, 0x43, 0xf8, 0xbe, 0xff, 0xff, 0xff, 0xff},
+                            ResolveVideoArgument);
         if (const char* trace = std::getenv("D1_NATIVE_VIDEO_TRACE");
             ok && trace && std::strcmp(trace, "0") != 0) {
             trace_video_text = true;

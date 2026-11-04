@@ -35,6 +35,7 @@ std::atomic<bool> labels_ready{false};
 std::atomic<unsigned> lookup_reports{0}, use_reports{0};
 std::atomic<unsigned> video_text_reports{0};
 u32 first_video_label = 0, last_video_label = 0;
+u64 first_video_ordinal = 0;
 bool trace_video_text = false;
 std::atomic<bool> graph_selected{false};
 
@@ -139,9 +140,25 @@ void PS4_SYSV_ABI ResolveVideoText(D1DetourRegisters* regs, u64) {
     ResolveVideoLibrary(reinterpret_cast<u8*>(regs->rbx) + 0x98);
 }
 
-void PS4_SYSV_ABI ResolveVideoArgument(D1DetourRegisters* regs, u64) {
-    // D1: the formatter's 0xc0-byte nested arguments store the same library/hash pair at +0xa8.
-    ResolveVideoLibrary(reinterpret_cast<u8*>(regs->rbx) - 8);
+void PS4_SYSV_ABI ResolveMissingVideoEntry(D1DetourRegisters* regs, u64) {
+    if (!active || regs->r12 || !regs->r14)
+        return;
+    const auto hash = Read<u32>(reinterpret_cast<const void*>(regs->r14));
+    if (hash < first_video_label || hash > last_video_label)
+        return;
+    // D1: the direct localized-string lookup may start from the original common library.
+    // On a miss, return only the corresponding appended entry of the verified English tag.
+    TryLabels();
+    if (labels_ready.load()) {
+        const auto [start, end] = EntryRange();
+        const u64 entry = start + (first_video_ordinal + hash - first_video_label) * 16;
+        if (entry < end) {
+            regs->r12 = entry;
+            if (trace_video_text && video_text_reports.fetch_add(1) < 24) {
+                LOG_INFO(Config, "D1 native video text: fallback entry for hash {:#x}", hash);
+            }
+        }
+    }
 }
 
 bool TargetIndex(u64 address) {
@@ -253,6 +270,10 @@ void Install() {
         if (!original_count || count <= original_count || count - original_count > 32) {
             throw std::runtime_error("Native video string index has an invalid appended range");
         }
+        if (Read<u64>(english.candidate.data() + 0x48) != count) {
+            throw std::runtime_error("Native video string index and English entry count disagree");
+        }
+        first_video_ordinal = original_count;
         const auto* hashes = candidate + (0x20 + Read<s64>(candidate + 0x10));
         first_video_label = Read<u32>(hashes + original_count * 4);
         last_video_label = Read<u32>(hashes + (count - 1) * 4);
@@ -289,9 +310,8 @@ void Install() {
                             SelectTextPayload) &&
             InstallD1Detour(0x9b66c6, std::array<u8, 7>{0x83, 0xbb, 0x98, 0, 0, 0, 0xff},
                             ResolveVideoText) &&
-            InstallD1Detour(0x9b67b3,
-                            std::array<u8, 8>{0x8b, 0x43, 0xf8, 0xbe, 0xff, 0xff, 0xff, 0xff},
-                            ResolveVideoArgument);
+            InstallD1Detour(0x8d5359, std::array<u8, 7>{0x4c, 0x89, 0xe0, 0x48, 0x83, 0xc4, 0x08},
+                            ResolveMissingVideoEntry);
         if (const char* trace = std::getenv("D1_NATIVE_VIDEO_TRACE");
             ok && trace && std::strcmp(trace, "0") != 0) {
             trace_video_text = true;

@@ -87,6 +87,7 @@ All are off unless set. None of them changes behaviour that upstream games rely 
 | `D1_MOUSE_LOOK=1` | Also mouse look in gameplay: the PC mouse's movement is added to player 0's look rates at the 56578 look site (0x91C7DC), scaled by the frame time, and the PC cursor is re-centred in the game window while no menu cursor is active. Moves the system cursor, so opt in only. |
 | `D1_MOUSE_CURSOR=1` | The menu cursor follows the host mouse while the game window has focus (Windows). `D1_MOUSE_SENS` scales it (default 1, the engine's own unscaled rate). |
 | `D1_FLIP_RATE=N` | Replaces the flip rate the title requests (Destiny asks for 1: every second vblank, 30 Hz). `0` flips on every vblank, for the 60 Hz engine-clock patch. Unset keeps the title's rate. |
+| `D1_RATE_RULES=0` | Disables the build-56578 timing detours. With the rules enabled, weapons with a whole-tick 30 Hz shot interval can distribute rounding across a burst at fractional tick rates. |
 | `D1_DUMP_DIR=DIR` | Creating `DIR.flag` dumps every texture sampled in the next ~0.2 s (raw, linear, in draw order) plus `events.txt`. |
 | `D1_TEX_SURVEY=1` | Logs each shader's distinct texture shapes and the render targets each pixel shader writes, once. |
 | `D1_TRACE_IMAGE=<hex address>` | Traces the texture cache's lookups, creation, expansion and freeing at that address. |

@@ -37,6 +37,7 @@
 #include "core/d1_native_video.h"
 #include "core/d1_video.h"
 #include "core/d1_jump_timing.h"
+#include "core/d1_weapon_timing.h"
 
 namespace Core::D1FrameRate {
 
@@ -320,6 +321,22 @@ void PS4_SYSV_ABI ScaleHeldBoost(D1DetourRegisters* regs, u64) {
     }
 }
 
+// D1: the 56578 fire gate compares whole elapsed ticks with XMM1's native interval.
+// RBX + 0x1440 counts shots in this burst and the first shot bypasses the gate.
+constexpr u64 WeaponGate = 0x6FEF7D;
+constexpr std::array<u8, 6> WeaponGateSpan = {0x2B, 0x83, 0x34, 0x14, 0x00, 0x00};
+
+void PS4_SYSV_ABI ScaleWeaponInterval(D1DetourRegisters* regs, u64) {
+    const uintptr_t clock = Pointer(ClockPtr);
+    const u32 rate = clock != 0 ? Read<u32>(clock + 0x04) : 0;
+    if (rate <= 30 || rate % 30 == 0) {
+        return;
+    }
+    const s32 shots = Read<s32>(static_cast<uintptr_t>(regs->rbx) + 0x1440);
+    float* interval = SavedXmm(regs, 1);
+    *interval = WeaponInterval(*interval, rate, shots);
+}
+
 void WriteTickImmediates(u32 n) {
     for (const auto& imm : TickImmediates) {
         const s32 ticks = std::max<s32>(1, Ticks(imm.ticks_at_30, 30.0f / static_cast<float>(n)));
@@ -396,6 +413,11 @@ void InstallRateRules() {
         return;
     }
     std::thread(FollowTickImmediates).detach();
+    if (InstallD1Detour(WeaponGate, WeaponGateSpan, ScaleWeaponInterval)) {
+        LOG_INFO(Lib_VideoOut, "D1 rate rules: weapon interval rounding follows burst boundaries");
+    } else {
+        LOG_ERROR(Lib_VideoOut, "D1 rate rules: weapon interval detour was refused");
+    }
     const bool ok = InstallD1Detour(JumpTimeTakeoff, JumpTimeSpan, ScaleJumpTime) &&
                     InstallD1Detour(JumpTimeHeld, JumpTimeSpan, ScaleJumpTime) &&
                     InstallD1Detour(JumpTakeoffAdd, JumpTakeoffSpan, ScaleTakeoffBoost) &&

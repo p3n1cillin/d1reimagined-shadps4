@@ -33,6 +33,8 @@ std::mutex label_mutex;
 bool active = false; // set before the guest runs; failed installation leaves every callback inert
 std::atomic<bool> labels_ready{false};
 std::atomic<unsigned> lookup_reports{0}, use_reports{0};
+std::atomic<unsigned> video_text_reports{0};
+u32 first_video_label = 0, last_video_label = 0;
 std::atomic<bool> graph_selected{false};
 
 std::pair<u64, u64> EntryRange() {
@@ -74,6 +76,18 @@ void PS4_SYSV_ABI UseEntry(D1DetourRegisters* regs, u64) {
         const auto [start, end] = EntryRange();
         LOG_ERROR(Config, "D1 native video entry use: {:#x}, expected {:#x}..{:#x}, offset {:#x}",
                   ptr, start, end, ptr - begin);
+    }
+}
+
+void PS4_SYSV_ABI TraceVideoText(D1DetourRegisters* regs, u64) {
+    if (!active || first_video_label == 0)
+        return;
+    const auto* text = reinterpret_cast<const u8*>(regs->rbx);
+    const auto hash = Read<u32>(text + 0x9c);
+    if (hash >= first_video_label && hash <= last_video_label &&
+        video_text_reports.fetch_add(1) < 24) {
+        LOG_INFO(Config, "D1 native video text: hash {:#x}, library {:#x}, expected {:#x}", hash,
+                 Read<u32>(text + 0x98), string_index_tag);
     }
 }
 
@@ -241,10 +255,20 @@ void Install() {
                             SelectTextPayload);
         if (const char* trace = std::getenv("D1_NATIVE_VIDEO_TRACE");
             ok && trace && std::strcmp(trace, "0") != 0) {
+            const auto original_count = Read<u64>(string_index.original.data() + 8);
+            const auto* candidate = string_index.candidate.data();
+            const auto count = Read<u64>(candidate + 8);
+            if (count > original_count) {
+                const auto* hashes = candidate + (0x20 + Read<s64>(candidate + 0x10));
+                first_video_label = Read<u32>(hashes + original_count * 4);
+                last_video_label = Read<u32>(hashes + (count - 1) * 4);
+            }
             ok = InstallD1Detour(0x8d520d, std::array<u8, 5>{0x48, 0x8d, 0x44, 0x81, 0x10}, Lookup,
                                  true) &&
                  InstallD1Detour(0x9b6937, std::array<u8, 6>{0x49, 0x8b, 0x06, 0x45, 0x31, 0xff},
-                                 UseEntry);
+                                 UseEntry) &&
+                 InstallD1Detour(0x9b66c6, std::array<u8, 7>{0x83, 0xbb, 0x98, 0, 0, 0, 0xff},
+                                 TraceVideoText);
         }
         active = ok;
         LOG_INFO(Config, "D1 native video: experimental hooks {} (native UI requires validation)",

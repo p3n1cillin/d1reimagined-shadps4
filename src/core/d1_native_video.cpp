@@ -200,12 +200,15 @@ void Install() {
         return;
     }
     try {
-        settings.LoadPair(dir, "settings", {{8, 40}, {0x18, 40}});
-        graph.LoadPair(dir, "graph", {{0x48, 16}, {0xc8, 4}, {0x138, 64}});
-        string_index.LoadPair(dir, "string-index", {{8, 4}});
-        english.LoadPair(dir, "english", {{8, 32}, {0x38, 1}, {0x48, 16}});
         std::ifstream manifest(std::filesystem::path{dir} / "manifest.json");
         const auto metadata = nlohmann::json::parse(manifest);
+        const bool existing_group = metadata.value("existing_group", false);
+        settings.LoadPair(dir, "settings", {{8, 40}, {0x18, 40}});
+        if (!existing_group) {
+            graph.LoadPair(dir, "graph", {{0x48, 16}, {0xc8, 4}, {0x138, 64}});
+        }
+        string_index.LoadPair(dir, "string-index", {{8, 4}});
+        english.LoadPair(dir, "english", {{8, 32}, {0x38, 1}, {0x48, 16}});
         string_index_tag = metadata.at("strings_index_tag").get<u32>();
         english_tag = metadata.at("english_tag").get<u32>();
         if (metadata.at("setting_ids").at("frame_rate") != 21 ||
@@ -213,12 +216,16 @@ void Install() {
             english_tag != Read<u32>(string_index.original.data() + 0x18)) {
             throw std::runtime_error("Native video manifest disagrees with supported option ids");
         }
+        // D1: an existing group already has a native binding and needs no graph detours.
+        const bool graph_ready =
+            existing_group ||
+            (InstallD1Detour(0xa8b073, std::array<u8, 7>{0x48, 0x8b, 0x47, 0x10, 0x48, 0x85, 0xc0},
+                             PrepareGraph) &&
+             InstallD1Detour(0xa8be60,
+                             std::array<u8, 10>{0x45, 0x31, 0xff, 0x48, 0x8b, 0x82, 0x40, 1, 0, 0},
+                             Graph));
         bool ok =
-            InstallD1Detour(0xa8b073, std::array<u8, 7>{0x48, 0x8b, 0x47, 0x10, 0x48, 0x85, 0xc0},
-                            PrepareGraph) &&
-            InstallD1Detour(0xa8be60,
-                            std::array<u8, 10>{0x45, 0x31, 0xff, 0x48, 0x8b, 0x82, 0x40, 1, 0, 0},
-                            Graph) &&
+            graph_ready &&
             InstallD1Detour(0x9aea52, std::array<u8, 5>{0x49, 0x8b, 0x44, 0x24, 0x10},
                             SettingsGroup) &&
             InstallD1Detour(0x9af328, std::array<u8, 7>{0x48, 0x8b, 0x41, 0x20, 0x48, 0x85, 0xc0},

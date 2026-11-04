@@ -17,6 +17,7 @@
 
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
+#include "common/path_util.h"
 #include "core/cpu_patches.h"
 #include "core/d1_native_video.h"
 #include "core/d1_tag_override.h"
@@ -230,12 +231,22 @@ void PS4_SYSV_ABI Set(D1DetourRegisters* regs, u64) {
 } // namespace
 
 void Install() {
-    const char* dir = std::getenv("D1_NATIVE_VIDEO_DIR");
-    if (!dir || !*dir || !D1Video::IsEnabled()) {
+    if (!D1Video::IsEnabled()) {
+        return;
+    }
+    const char* configured_dir = std::getenv("D1_NATIVE_VIDEO_DIR");
+    if (configured_dir && !*configured_dir) {
         return;
     }
     try {
-        std::ifstream manifest(std::filesystem::path{dir} / "manifest.json");
+        const auto dir = configured_dir ? std::filesystem::path{configured_dir}
+                                        : Common::FS::GetUserPath(Common::FS::PathType::UserDir) /
+                                              "d1-native-video";
+        const auto manifest_path = dir / "manifest.json";
+        if (!configured_dir && !std::filesystem::is_regular_file(manifest_path)) {
+            return;
+        }
+        std::ifstream manifest(manifest_path);
         const auto metadata = nlohmann::json::parse(manifest);
         const bool existing_group = metadata.value("existing_group", false);
         settings.LoadPair(dir, "settings", {{8, 40}, {0x18, 40}});

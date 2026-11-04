@@ -35,6 +35,7 @@ std::atomic<bool> labels_ready{false};
 std::atomic<unsigned> lookup_reports{0}, use_reports{0};
 std::atomic<unsigned> video_text_reports{0};
 u32 first_video_label = 0, last_video_label = 0;
+bool trace_video_text = false;
 std::atomic<bool> graph_selected{false};
 
 std::pair<u64, u64> EntryRange() {
@@ -79,18 +80,6 @@ void PS4_SYSV_ABI UseEntry(D1DetourRegisters* regs, u64) {
     }
 }
 
-void PS4_SYSV_ABI TraceVideoText(D1DetourRegisters* regs, u64) {
-    if (!active || first_video_label == 0)
-        return;
-    const auto* text = reinterpret_cast<const u8*>(regs->rbx);
-    const auto hash = Read<u32>(text + 0x9c);
-    if (hash >= first_video_label && hash <= last_video_label &&
-        video_text_reports.fetch_add(1) < 24) {
-        LOG_INFO(Config, "D1 native video text: hash {:#x}, library {:#x}, expected {:#x}", hash,
-                 Read<u32>(text + 0x98), string_index_tag);
-    }
-}
-
 u64 TagRoot(u32 tag) {
     // D1 56578's inlined tag-manager lookup (9AEA04..52). Preserve its signed slot selection
     // and unsigned address arithmetic; the language payload may not yet be resident.
@@ -124,6 +113,27 @@ void TryLabels() {
         !labels_ready.exchange(true)) {
         LOG_INFO(Config,
                  "D1 native video: original English library verified; lookup selection ready");
+    }
+}
+
+void PS4_SYSV_ABI ResolveVideoText(D1DetourRegisters* regs, u64) {
+    if (!active)
+        return;
+    auto* text = reinterpret_cast<u8*>(regs->rbx);
+    const auto hash = Read<u32>(text + 0x9c);
+    if (hash < first_video_label || hash > last_video_label ||
+        Read<u32>(text + 0x98) != 0xffffffff) {
+        return;
+    }
+    // D1: authored video hashes have no entry in the game's original library routing.
+    // Supply their verified library before the formatter rejects the unresolved tag.
+    TryLabels();
+    if (labels_ready.load()) {
+        std::memcpy(text + 0x98, &string_index_tag, sizeof string_index_tag);
+        if (trace_video_text && video_text_reports.fetch_add(1) < 24) {
+            LOG_INFO(Config, "D1 native video text: hash {:#x} assigned to library {:#x}", hash,
+                     string_index_tag);
+        }
     }
 }
 
@@ -230,6 +240,23 @@ void Install() {
             english_tag != Read<u32>(string_index.original.data() + 0x18)) {
             throw std::runtime_error("Native video manifest disagrees with supported option ids");
         }
+        const auto original_count = Read<u64>(string_index.original.data() + 8);
+        const auto* candidate = string_index.candidate.data();
+        const auto count = Read<u64>(candidate + 8);
+        if (!original_count || count <= original_count || count - original_count > 32) {
+            throw std::runtime_error("Native video string index has an invalid appended range");
+        }
+        const auto* hashes = candidate + (0x20 + Read<s64>(candidate + 0x10));
+        first_video_label = Read<u32>(hashes + original_count * 4);
+        last_video_label = Read<u32>(hashes + (count - 1) * 4);
+        if (first_video_label <= Read<u32>(hashes + (original_count - 1) * 4)) {
+            throw std::runtime_error("Native video labels must follow the original hashes");
+        }
+        for (u64 i = original_count; i < count; ++i) {
+            if (Read<u32>(hashes + i * 4) != first_video_label + (i - original_count)) {
+                throw std::runtime_error("Native video label hashes must be consecutive");
+            }
+        }
         // D1: an existing group already has a native binding and needs no graph detours.
         const bool graph_ready =
             existing_group ||
@@ -252,23 +279,16 @@ void Install() {
                             SelectTextIndex) &&
             InstallD1Detour(0x8d534c,
                             std::array<u8, 8>{0x49, 0x8d, 0x4b, 0x50, 0x49, 0x03, 0x4b, 0x50},
-                            SelectTextPayload);
+                            SelectTextPayload) &&
+            InstallD1Detour(0x9b66c6, std::array<u8, 7>{0x83, 0xbb, 0x98, 0, 0, 0, 0xff},
+                            ResolveVideoText);
         if (const char* trace = std::getenv("D1_NATIVE_VIDEO_TRACE");
             ok && trace && std::strcmp(trace, "0") != 0) {
-            const auto original_count = Read<u64>(string_index.original.data() + 8);
-            const auto* candidate = string_index.candidate.data();
-            const auto count = Read<u64>(candidate + 8);
-            if (count > original_count) {
-                const auto* hashes = candidate + (0x20 + Read<s64>(candidate + 0x10));
-                first_video_label = Read<u32>(hashes + original_count * 4);
-                last_video_label = Read<u32>(hashes + (count - 1) * 4);
-            }
+            trace_video_text = true;
             ok = InstallD1Detour(0x8d520d, std::array<u8, 5>{0x48, 0x8d, 0x44, 0x81, 0x10}, Lookup,
                                  true) &&
                  InstallD1Detour(0x9b6937, std::array<u8, 6>{0x49, 0x8b, 0x06, 0x45, 0x31, 0xff},
-                                 UseEntry) &&
-                 InstallD1Detour(0x9b66c6, std::array<u8, 7>{0x83, 0xbb, 0x98, 0, 0, 0, 0xff},
-                                 TraceVideoText);
+                                 UseEntry);
         }
         active = ok;
         LOG_INFO(Config, "D1 native video: experimental hooks {} (native UI requires validation)",

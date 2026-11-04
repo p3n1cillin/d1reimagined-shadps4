@@ -149,12 +149,12 @@ void PS4_SYSV_ABI Graph(D1DetourRegisters* regs, u64) {
         }
     }
 }
-void PS4_SYSV_ABI SelectGraph(D1DetourRegisters* regs, u64) {
+void PS4_SYSV_ABI PrepareGraph(D1DetourRegisters* regs, u64) {
     if (!active)
         return;
     if (graph.Apply(regs->rdi)) {
-        // D1: prepare before imports, component construction and property registration, retaining
-        // the guest root identity used by the graph context. The binding pass alone is too late.
+        // D1: A8B010 allocates components before A8B270 applies their properties/bindings. Prepare
+        // at its first tag read, retaining the guest root used by the graph context.
         if (!graph_selected.exchange(true))
             LOG_INFO(Config, "D1 native video: graph arrays ready before component construction");
     }
@@ -214,8 +214,8 @@ void Install() {
             throw std::runtime_error("Native video manifest disagrees with supported option ids");
         }
         bool ok =
-            InstallD1Detour(0xa8b2de, std::array<u8, 7>{0x48, 0x8b, 0x47, 0x10, 0x48, 0x85, 0xc0},
-                            SelectGraph) &&
+            InstallD1Detour(0xa8b073, std::array<u8, 7>{0x48, 0x8b, 0x47, 0x10, 0x48, 0x85, 0xc0},
+                            PrepareGraph) &&
             InstallD1Detour(0xa8be60,
                             std::array<u8, 10>{0x45, 0x31, 0xff, 0x48, 0x8b, 0x82, 0x40, 1, 0, 0},
                             Graph) &&

@@ -15,6 +15,7 @@
 #include "common/io_file.h"
 #include "common/logging/formatter.h"
 #include "common/scope_exit.h"
+#include "core/d1_video.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -209,11 +210,28 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
+    const bool d1_video = Core::D1Video::IsEnabled();
+    if (d1_video) {
+        // D1: ImGui must see BOTH edges before the raw keyboard library can consume an event.
+        // Feeding only the panel's consumed key-downs left Space/Enter stuck in ImGui, so a combo
+        // opened once but could not select a value on the second press. Releases still reach the
+        // raw keyboard and regular pad bindings; libScePad is neutral while the panel is open.
+        const bool video_consumed = Core::D1Video::ProcessEvent(event);
+        const bool imgui_consumed = ImGui::Core::ProcessEvent(&event);
+        if (video_consumed || imgui_consumed) {
+            if (Core::D1Video::IsOpen() && (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION ||
+                                            event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                                            event.type == SDL_EVENT_GAMEPAD_BUTTON_UP)) {
+                OnGamepadEvent(&event);
+            }
+            return;
+        }
+    }
     if (Libraries::Mouse::PushSDLEvent(event) || Libraries::Keyboard::PushSDLEvent(event)) {
         return;
     }
 
-    if (ImGui::Core::ProcessEvent(&event)) {
+    if (!d1_video && ImGui::Core::ProcessEvent(&event)) {
         return;
     }
 

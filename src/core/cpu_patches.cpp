@@ -2233,7 +2233,8 @@ void PrePatchInstructions(u64 segment_addr, u64 segment_size) {
 #endif
 }
 
-bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback callback) {
+bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback callback,
+                     bool callback_after) {
     if (MemoryPatcher::g_eboot_address == 0) {
         LOG_ERROR(Core, "D1 detour {:#x}: the main executable is not loaded", site_vaddr);
         return false;
@@ -2256,8 +2257,8 @@ bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback 
     while (size < std::max(NearJumpSize, span.size())) {
         auto decoded = DecodeCodeInstruction(at, reinterpret_cast<uintptr_t>(module->end));
         if (decoded.instruction.length == 0 || IsControlFlowTerminator(decoded.instruction)) {
-            LOG_ERROR(Core, "D1 detour {:#x}: cannot relocate the instruction at {:#x}",
-                      site_vaddr, at - MemoryPatcher::g_eboot_address);
+            LOG_ERROR(Core, "D1 detour {:#x}: cannot relocate the instruction at {:#x}", site_vaddr,
+                      at - MemoryPatcher::g_eboot_address);
             return false;
         }
         size += decoded.instruction.length;
@@ -2268,6 +2269,19 @@ bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback 
     auto& g = module->trampoline_gen;
     const size_t start = g.getSize();
     try {
+        const auto relocate = [&]() {
+            for (const auto& decoded : instructions) {
+                if (!EncodeRelocatedInstruction(decoded, g)) {
+                    g.setSize(start);
+                    LOG_ERROR(Core, "D1 detour {:#x}: relocation refused", site_vaddr);
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (callback_after && !relocate()) {
+            return false;
+        }
         // Keep the guest's red zone intact, then save everything the callback may clobber.
         g.lea(rsp, ptr[rsp - GuestRedZoneSize]);
         g.push(rax);
@@ -2317,12 +2331,8 @@ bool InstallD1Detour(u64 site_vaddr, std::span<const u8> span, D1DetourCallback 
         g.pop(rcx);
         g.pop(rax);
         g.lea(rsp, ptr[rsp + GuestRedZoneSize]);
-        for (const auto& decoded : instructions) {
-            if (!EncodeRelocatedInstruction(decoded, g)) {
-                g.setSize(start);
-                LOG_ERROR(Core, "D1 detour {:#x}: relocation refused", site_vaddr);
-                return false;
-            }
+        if (!callback_after && !relocate()) {
+            return false;
         }
         g.jmp(reinterpret_cast<void*>(at));
     } catch (const Xbyak::Error& error) {

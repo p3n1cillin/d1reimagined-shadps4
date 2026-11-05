@@ -4,6 +4,7 @@
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
+#include "core/d1_video.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/pad/pad_errors.h"
@@ -373,7 +374,9 @@ int ProcessStates(OrbisPadData* pData, const Input::State* states, s32 num) {
         return 1;
     }
 
-    const bool gamepad_input_intercepted = ImGui::Core::IsGamepadInputCaptured();
+    const bool gamepad_input_intercepted =
+        ImGui::Core::IsGamepadInputCaptured() ||
+        Core::D1Video::IsOpen(); // D1: neutral pad in Video panel
     for (int i = 0; i < num; i++) {
         pData[i] = {};
         if (gamepad_input_intercepted) {

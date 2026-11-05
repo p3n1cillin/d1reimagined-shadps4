@@ -17,4 +17,7 @@ u32 VblankOverride();
 /// Called once per presented frame (the uncapped mode follows the presented rate).
 void NoteFlip();
 
+// D1: live request from the in-game Video panel; Install starts the single writer.
+void SetRate(int fps);
+
 } // namespace Core::D1FrameRate

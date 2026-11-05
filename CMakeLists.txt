@@ -972,6 +972,12 @@ if (ARCHITECTURE STREQUAL "x86_64")
              src/core/cpu_patches.cpp
              src/core/d1_frame_rate.cpp
              src/core/d1_frame_rate.h
+             src/core/d1_video.cpp
+             src/core/d1_video.h
+             src/core/d1_video_config.h
+             src/core/d1_native_video.cpp
+             src/core/d1_native_video.h
+             src/core/d1_tag_override.h
              src/core/d1_native_mouse.cpp
              src/core/d1_native_mouse.h
              src/core/cpu_patches.h

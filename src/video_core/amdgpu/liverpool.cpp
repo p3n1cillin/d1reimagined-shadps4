@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstdlib>
 #include <mutex>
+#include <thread>
 #include <unordered_set>
 
 #include <boost/preprocessor/stringize.hpp>
@@ -59,10 +60,17 @@ std::array<u8, 48_KB> Liverpool::ConstantEngine::constants_heap;
 
 // D1_DRAW_STATS: a guest wait (WAIT_REG_MEM, a memory semaphore, a rewind, the CE/DE counters)
 // found unsatisfied. The task yields and the command processor resumes it straight away, so these
-// are spins of the GPU thread.
+// are spins of the GPU thread, on a core the game's own threads could use. D1_GPU_WAIT_YIELD=1:
+// past 256 spins of one wait, each further spin gives the rest of the time slice to another ready
+// thread first (std::this_thread::yield; on Windows SwitchToThread, which returns at once when
+// none is waiting).
 static void D1WaitSpin(Vulkan::D1DrawPerf::WaitSpin& spin) {
-    spin.Spin(false);
-    Vulkan::D1DrawPerf::Count(Vulkan::D1DrawPerf::Counter::WaitSpins);
+    using namespace Vulkan::D1DrawPerf;
+    Count(Counter::WaitSpins);
+    if (spin.Spin(WaitYieldEnabled())) {
+        Count(Counter::WaitYields);
+        std::this_thread::yield();
+    }
 }
 
 static std::span<const u32> NextPacket(std::span<const u32> span, size_t offset) {

@@ -93,6 +93,7 @@ All are off unless set. None of them changes behaviour that upstream games rely 
 | `D1_TRACE_IMAGE=<hex address>` | Traces the texture cache's lookups, creation, expansion and freeing at that address. |
 | `D1_META_RUN=1` | Still runs a compute dispatch over memory once registered as HTILE (diagnostic). |
 | `D1_DRAW_FAST=0` | Restores upstream's draw path. By default (on), a graphics pipeline, vertex input layout, vertex buffer or index buffer bind that repeats what the current Vulkan command buffer already has is not recorded again, the graphics pipeline lookup compares the key with the last one before hashing it, and the scheduler doesn't query the GPU timeline before a draw when no deferred operation can be due. Each is exact by the Vulkan rules (the remembered state is forgotten on every new command buffer and after the blit helper binds its own pipelines); see "Measuring the draw path". |
+| `D1_GPU_WAIT_YIELD=1` | Experimental, off by default. A guest wait on the GPU command processor (WAIT_REG_MEM, a memory semaphore, a rewind, the CE/DE counters) that has spun 256 times yields the thread's time slice on each further spin, so a long wait leaves the core to the game's threads. It may also delay noticing the wait's end, so check it with `D1_DRAW_STATS` ("guest wait spins") and the frame rate before using it. |
 | `D1_DRAW_STATS=1` | Logs the draw path's CPU cost once a second (see "Measuring the draw path"). Its timers add about 0.1 us to each draw, so compare runs with the same setting. |
 
 ## Measuring the draw path

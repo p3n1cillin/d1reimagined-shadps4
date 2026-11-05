@@ -17,6 +17,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/renderer_vulkan/d1_draw_perf.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -316,6 +317,8 @@ void Rasterizer::EliminateFastClear() {
 
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
+    // D1_DRAW_STATS: time the draw's phases.
+    D1DrawPerf::CallTimer d1_timer{D1DrawPerf::Kind::Draw};
 
     scheduler.PopPendingOperations();
 
@@ -325,6 +328,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
 
     const auto& regs = liverpool->regs;
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline();
+    d1_timer.Mark(D1DrawPerf::Phase::Pipeline);
     if (!pipeline) {
         return;
     }
@@ -333,6 +337,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     if (!BindResources(pipeline)) {
         return;
     }
+    d1_timer.Mark(D1DrawPerf::Phase::Resources);
     const auto state = BeginRendering(pipeline);
 
     BindVertexBuffers(pipeline);
@@ -371,6 +376,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
                               u32 max_count, VAddr count_address, u16 vertex_sgpr_offset,
                               u16 instance_sgpr_offset) {
     RENDERER_TRACE;
+    D1DrawPerf::CallTimer d1_timer{D1DrawPerf::Kind::DrawIndirect};
 
     scheduler.PopPendingOperations();
 
@@ -383,6 +389,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         .instance_sgpr_offset = instance_sgpr_offset,
     };
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
+    d1_timer.Mark(D1DrawPerf::Phase::Pipeline);
     if (!pipeline) {
         return;
     }
@@ -391,6 +398,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     if (!BindResources(pipeline)) {
         return;
     }
+    d1_timer.Mark(D1DrawPerf::Phase::Resources);
     const auto state = BeginRendering(pipeline);
 
     BindVertexBuffers(pipeline);
@@ -465,11 +473,13 @@ static bool D1CoverFirst(u64 key) {
 
 void Rasterizer::DispatchDirect() {
     RENDERER_TRACE;
+    D1DrawPerf::CallTimer d1_timer{D1DrawPerf::Kind::Dispatch};
 
     scheduler.PopPendingOperations();
 
     const auto& cs_program = liverpool->GetCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
+    d1_timer.Mark(D1DrawPerf::Phase::Pipeline);
     if (!pipeline) {
         return;
     }
@@ -482,6 +492,7 @@ void Rasterizer::DispatchDirect() {
     if (!BindResources(pipeline)) {
         return;
     }
+    d1_timer.Mark(D1DrawPerf::Phase::Resources);
 
     if (needs_barrier) {
         runtime.FlushBarriers();
@@ -510,11 +521,13 @@ void Rasterizer::DispatchDirect() {
 
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     RENDERER_TRACE;
+    D1DrawPerf::CallTimer d1_timer{D1DrawPerf::Kind::Dispatch};
 
     scheduler.PopPendingOperations();
 
     const auto& cs_program = liverpool->GetCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
+    d1_timer.Mark(D1DrawPerf::Phase::Pipeline);
     if (!pipeline) {
         return;
     }
@@ -522,6 +535,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     if (!BindResources(pipeline)) {
         return;
     }
+    d1_timer.Mark(D1DrawPerf::Phase::Resources);
 
     const auto [buffer, base] = buffer_cache.ObtainBuffer(address + offset, size, false);
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);

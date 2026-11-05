@@ -92,6 +92,37 @@ All are off unless set. None of them changes behaviour that upstream games rely 
 | `D1_TEX_SURVEY=1` | Logs each shader's distinct texture shapes and the render targets each pixel shader writes, once. |
 | `D1_TRACE_IMAGE=<hex address>` | Traces the texture cache's lookups, creation, expansion and freeing at that address. |
 | `D1_META_RUN=1` | Still runs a compute dispatch over memory once registered as HTILE (diagnostic). |
+| `D1_DRAW_STATS=1` | Logs the draw path's CPU cost once a second (see "Measuring the draw path"). Its timers add about 0.1 us to each draw, so compare runs with the same setting. |
+
+## Measuring the draw path
+
+Destiny is draw-heavy. Bungie's renderer talks (Tatarchuk, GDC 2015 and 2017; SIGGRAPH 2013 and 2014;
+Genova, GDC 2015) describe many small command buffers per view and render stage, 3,100-9,000 shader
+techniques a frame, each gear piece drawn about five times, and the same state re-bound at the start
+of each command buffer. The emulator turns every one of those draws into Vulkan commands on a single
+thread, the GPU command processor. When its CPU cost per draw times the draws in a frame exceeds the
+frame time, the frame rate falls while the host GPU waits.
+
+`D1_DRAW_STATS=1` logs one line a second (`Render_Vulkan`, info):
+
+```
+D1 draw stats: 182000 draws/s (0 indirect), 2400 dispatches/s, 120 submits/s, 60 guest submits/s
+with 3500 command buffers/s; 2.81 us a call (pipeline 0.92, resources 1.20, record 0.69), slowest
+450 us; GPU thread 52% in calls; skipped binds: ...; guest wait spins 0/s (0 yields)
+```
+
+(The numbers above show the format, not a measurement.)
+
+- **GPU thread N% in calls**: the share of wall time the command processor spends inside draws and
+  dispatches. Near 100%, the draw path limits the frame rate, and frame time is about draws a frame
+  times the cost of a call.
+- **The phases**: *pipeline* builds the pipeline key, picks each shader's permutation and finds the
+  pipeline (a first-time compile shows up as the slowest call); *resources* finds render targets,
+  buffers, textures and samplers in the caches; *record* covers barriers, the rendering scope,
+  vertex and index buffers, descriptors, dynamic state and the draw itself.
+- **Command buffers/s** counts the guest's indirect buffers; **guest wait spins** count how often a
+  guest wait (WAIT_REG_MEM, a memory semaphore, a rewind, the CE/DE counters) was found
+  unsatisfied, each a spin of the GPU thread.
 
 ## How it fits together
 

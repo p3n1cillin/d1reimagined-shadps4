@@ -264,7 +264,7 @@ void PS4_SYSV_ABI MouseLook(D1DetourRegisters* regs, u64) {
     if (dx == 0.0f && dy == 0.0f) {
         return; // an idle mouse leaves the stick's look alone
     }
-    const float gain = StickSecondsPerCount * g_sensitivity / dt;
+    const float gain = StickSecondsPerCount * g_look_sensitivity / dt;
     const float yaw = LoadFloat(regs->r13 + LookYawRate) - dx * gain;
     const float pitch = LoadFloat(regs->r13 + LookPitchRate) + dy * gain;
     if (std::isfinite(yaw) && std::isfinite(pitch)) {
@@ -504,9 +504,6 @@ float EnvFloat(const char* name, float fallback) {
 } // namespace
 
 void Install() {
-    if (MemoryPatcher::g_game_serial != "CUSA00219") {
-        return; // the sites are 56578's
-    }
     g_sensitivity = EnvFloat("D1_MOUSE_SENS", 1.0f);
     g_look_sensitivity = EnvFloat("D1_MOUSE_LOOK_SENS", g_sensitivity);
     g_ads_sensitivity = EnvFloat("D1_MOUSE_ADS_SENS", 1.0f);

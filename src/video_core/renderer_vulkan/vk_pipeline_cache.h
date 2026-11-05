@@ -136,6 +136,9 @@ private:
     std::array<vk::ShaderModule, MaxShaderStages> modules{};
     Shader::Gcn::FetchShaderData* fetch_shader{};
     GraphicsPipelineKey graphics_key{};
+    // D1 (D1_DRAW_FAST): the last graphics key and its pipeline, checked before the hash map.
+    GraphicsPipelineKey d1_last_key{};
+    const GraphicsPipeline* d1_last_pipeline{};
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
 

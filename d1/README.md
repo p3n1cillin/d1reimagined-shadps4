@@ -92,6 +92,7 @@ All are off unless set. None of them changes behaviour that upstream games rely 
 | `D1_TEX_SURVEY=1` | Logs each shader's distinct texture shapes and the render targets each pixel shader writes, once. |
 | `D1_TRACE_IMAGE=<hex address>` | Traces the texture cache's lookups, creation, expansion and freeing at that address. |
 | `D1_META_RUN=1` | Still runs a compute dispatch over memory once registered as HTILE (diagnostic). |
+| `D1_DRAW_FAST=0` | Restores upstream's draw path. By default (on), a graphics pipeline, vertex input layout, vertex buffer or index buffer bind that repeats what the current Vulkan command buffer already has is not recorded again, the graphics pipeline lookup compares the key with the last one before hashing it, and the scheduler doesn't query the GPU timeline before a draw when no deferred operation can be due. Each is exact by the Vulkan rules (the remembered state is forgotten on every new command buffer and after the blit helper binds its own pipelines); see "Measuring the draw path". |
 | `D1_DRAW_STATS=1` | Logs the draw path's CPU cost once a second (see "Measuring the draw path"). Its timers add about 0.1 us to each draw, so compare runs with the same setting. |
 
 ## Measuring the draw path
@@ -123,6 +124,33 @@ with 3500 command buffers/s; 2.81 us a call (pipeline 0.92, resources 1.20, reco
 - **Command buffers/s** counts the guest's indirect buffers; **guest wait spins** count how often a
   guest wait (WAIT_REG_MEM, a memory semaphore, a rewind, the CE/DE counters) was found
   unsatisfied, each a spin of the GPU thread.
+- **Skipped binds** and **pipeline memo** say how often `D1_DRAW_FAST` found the state already
+  bound (0% with `D1_DRAW_FAST=0`).
+
+### What D1_DRAW_FAST saves, and the A/B in the game
+
+Per draw it can save one `vkCmdBindPipeline`, one `vkCmdSetVertexInputEXT`, a vertex and an index
+buffer bind (each only when it repeats the command buffer's state), one
+`vkGetSemaphoreCounterValue` (whenever no deferred operation can be due), and the hash and map
+probe of a ~380-byte pipeline key on a memo hit. The bench in `tests/test_d1_draw_perf.cpp`
+(`--bench`) puts the filters at about 1-12 ns each and the lookup at 68 ns against 31 ns behind the
+memo, with runs of eight draws per pipeline. What the driver no longer records is worth more:
+about 0.1-0.4 us a draw is the estimate. If a draw costs 2-4 us on the command processor (the stats
+give the real figure), that is roughly 5-15% of its time. These are estimates from the code and the
+bench, not game measurements. The frame
+rate only rises where the command processor is the limit (**GPU thread** near 100%).
+
+The native test, on the same build:
+
+1. Same scene and setting both times: for example a fixed checkpoint of A Guardian Rises or the
+   Tower plaza, standing still for 60 s after the load settles, with `D1_FPS` fixed (60) or
+   uncapped (`D1_FPS=0`), and nothing heavy running on the machine.
+2. Run with `D1_DRAW_STATS=1 D1_DRAW_FAST=0`, then with `D1_DRAW_STATS=1` only.
+3. Compare the medians of the stats lines (**us a call**, its **record** phase, **GPU thread %**)
+   with the frame rate: the emulator's FPS counter, `D1_FPS`'s "uncapped: N frames/s" lines, and
+   its "ran at N ticks/s" lines (fewer of them, or a higher held rate, at the same setting).
+4. Look for rendering differences between the two runs (none are expected; one would mean a
+   bind the filters should not have skipped, and `D1_DRAW_FAST=0` is the workaround).
 
 ## How it fits together
 

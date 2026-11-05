@@ -134,7 +134,15 @@ void Scheduler::Wait(u64 tick) {
 
 void Scheduler::PopPendingOperations() {
     std::unique_lock lk(pending_ops_mutex);
-    work_semaphore.Refresh();
+    // D1_DRAW_FAST: this runs before every draw and dispatch. Ask the driver for the timeline's
+    // value only when an operation could be due: none is waiting, or the first one belongs to the
+    // command buffer still being recorded (operations are queued in tick order).
+    if (D1DrawPerf::FastEnabled() &&
+        (pending_ops.empty() || pending_ops.front().gpu_tick >= work_semaphore.CurrentTick())) {
+        D1DrawPerf::Count(D1DrawPerf::Counter::PendingRefreshSkipped);
+    } else {
+        work_semaphore.Refresh();
+    }
     while (!pending_ops.empty() && work_semaphore.IsFree(pending_ops.front().gpu_tick)) {
         pending_ops.front().callback();
         pending_ops.pop();

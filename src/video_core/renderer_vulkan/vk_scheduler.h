@@ -12,6 +12,7 @@
 #include "common/unique_function.h"
 #include "video_core/amdgpu/regs_color.h"
 #include "video_core/amdgpu/regs_primitive.h"
+#include "video_core/renderer_vulkan/d1_draw_perf.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 #include "vulkan/vulkan.hpp"
@@ -164,12 +165,35 @@ struct DynamicState {
     float line_width{};
     bool feedback_loop_enabled{};
 
+    /// D1 (D1_DRAW_FAST): what the current command buffer already has bound, so that a bind which
+    /// repeats it is not recorded again. Forgotten with the dynamic state: on a new command buffer,
+    /// and after host passes bind their own pipelines (blit helper).
+    struct D1Binds {
+        static constexpr std::size_t MaxVertexInputs = 32; // MaxVertexBufferCount
+        D1DrawPerf::LastValue<u64> graphics_pipeline;
+        D1DrawPerf::LastList<vk::VertexInputBindingDescription2EXT, MaxVertexInputs>
+            vertex_bindings;
+        D1DrawPerf::LastList<vk::VertexInputAttributeDescription2EXT, MaxVertexInputs>
+            vertex_attributes;
+        D1DrawPerf::LastList<D1DrawPerf::VertexBufferBind, MaxVertexInputs> vertex_buffers;
+        D1DrawPerf::LastValue<D1DrawPerf::IndexBufferBind> index_buffer;
+
+        void Invalidate() {
+            graphics_pipeline.Invalidate();
+            vertex_bindings.Invalidate();
+            vertex_attributes.Invalidate();
+            vertex_buffers.Invalidate();
+            index_buffer.Invalidate();
+        }
+    } d1_binds;
+
     /// Commits the dynamic state to the provided command buffer.
     void Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf);
 
     /// Invalidates all dynamic state to be flushed into the next command buffer.
     void Invalidate() {
         std::memset(&dirty_state, 0xFF, sizeof(dirty_state));
+        d1_binds.Invalidate();
     }
 
     void SetViewports(const Viewports& viewports_) {

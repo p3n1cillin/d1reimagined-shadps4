@@ -358,7 +358,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
 
     const auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+    BindGraphicsPipeline(pipeline);
 
     if (is_indexed) {
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
@@ -426,7 +426,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     scheduler.BeginRendering(state);
 
     const auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+    BindGraphicsPipeline(pipeline);
 
     if (is_indexed) {
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
@@ -611,6 +611,20 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     return true;
 }
 
+void Rasterizer::BindGraphicsPipeline(const GraphicsPipeline* pipeline) {
+    // D1_DRAW_FAST: Destiny draws runs of the same technique and re-binds its state at the start of
+    // each command buffer; binding the pipeline the command buffer already has is skipped.
+    auto& binds = scheduler.GetDynamicState().d1_binds;
+    const vk::Pipeline handle = pipeline->Handle();
+    if (D1DrawPerf::FastEnabled() &&
+        !binds.graphics_pipeline.Changed(std::bit_cast<u64>(static_cast<VkPipeline>(handle)))) {
+        D1DrawPerf::Count(D1DrawPerf::Counter::PipelineBindsSkipped);
+        return;
+    }
+    D1DrawPerf::Count(D1DrawPerf::Counter::PipelineBinds);
+    scheduler.CommandBuffer().bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+}
+
 void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
     const auto& regs = liverpool->regs;
     VertexInputs<vk::VertexInputAttributeDescription2EXT> attributes;
@@ -620,10 +634,25 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
     pipeline->GetVertexInputs(attributes, bindings, divisors, guest_buffers,
                               regs.vgt_instance_step_rate_0, regs.vgt_instance_step_rate_1);
 
+    auto& d1_binds = scheduler.GetDynamicState().d1_binds;
+    static_assert(MaxVertexBufferCount == DynamicState::D1Binds::MaxVertexInputs);
+    const bool d1_fast = D1DrawPerf::FastEnabled();
     if (instance.IsVertexInputDynamicState()) {
-        // Update current vertex inputs.
-        const auto cmdbuf = scheduler.CommandBuffer();
-        cmdbuf.setVertexInputEXT(bindings, attributes);
+        // D1_DRAW_FAST: the same vertex layout as the last draw on this command buffer is not set
+        // again (both lists are compared, so both are remembered).
+        const bool new_bindings = !d1_fast || d1_binds.vertex_bindings.Changed(
+                                                  std::span{bindings.data(), bindings.size()});
+        const bool new_attributes =
+            !d1_fast ||
+            d1_binds.vertex_attributes.Changed(std::span{attributes.data(), attributes.size()});
+        if (new_bindings || new_attributes) {
+            // Update current vertex inputs.
+            D1DrawPerf::Count(D1DrawPerf::Counter::VertexInputs);
+            const auto cmdbuf = scheduler.CommandBuffer();
+            cmdbuf.setVertexInputEXT(bindings, attributes);
+        } else {
+            D1DrawPerf::Count(D1DrawPerf::Counter::VertexInputsSkipped);
+        }
     }
 
     if (bindings.empty()) {
@@ -699,8 +728,23 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
         host_strides.push_back(buffer.GetStride());
     }
 
-    const auto cmdbuf = scheduler.CommandBuffer();
     const auto num_buffers = guest_buffers.size();
+    if (d1_fast && instance.IsVertexInputDynamicState()) {
+        // D1_DRAW_FAST: the same buffers at the same offsets as the last draw on this command
+        // buffer are not bound again. Only with dynamic vertex input: otherwise the strides are
+        // pipeline dynamic state, which a pipeline without vertex bindings leaves undefined.
+        VertexInputs<D1DrawPerf::VertexBufferBind> d1_vbs;
+        for (size_t i = 0; i < num_buffers; ++i) {
+            d1_vbs.push_back({std::bit_cast<u64>(static_cast<VkBuffer>(host_buffers[i])),
+                              host_offsets[i], host_sizes[i], host_strides[i]});
+        }
+        if (!d1_binds.vertex_buffers.Changed(std::span{d1_vbs.data(), d1_vbs.size()})) {
+            D1DrawPerf::Count(D1DrawPerf::Counter::VertexBuffersSkipped);
+            return;
+        }
+    }
+    D1DrawPerf::Count(D1DrawPerf::Counter::VertexBuffers);
+    const auto cmdbuf = scheduler.CommandBuffer();
     if (instance.IsVertexInputDynamicState()) {
         cmdbuf.bindVertexBuffers(0, num_buffers, host_buffers.data(), host_offsets.data());
     } else {
@@ -724,6 +768,15 @@ void Rasterizer::BindIndexBuffer(u32 index_offset) {
     const auto [buffer, offset] =
         buffer_cache.ObtainBuffer(index_address, index_buffer_size, false);
     needs_barrier |= runtime.IsBufferAccessed(buffer, offset, index_buffer_size);
+    // D1_DRAW_FAST: the index buffer the command buffer already has is not bound again.
+    if (D1DrawPerf::FastEnabled() &&
+        !scheduler.GetDynamicState().d1_binds.index_buffer.Changed(
+            {std::bit_cast<u64>(static_cast<VkBuffer>(buffer->Handle())), offset,
+             static_cast<u32>(index_type)})) {
+        D1DrawPerf::Count(D1DrawPerf::Counter::IndexBuffersSkipped);
+        return;
+    }
+    D1DrawPerf::Count(D1DrawPerf::Counter::IndexBuffers);
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindIndexBuffer(buffer->Handle(), offset, index_type);
 }

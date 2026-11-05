@@ -1058,7 +1058,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     D1DumpPoll();
     const u32 first_image_idx = image_infos.size();
     // To emulate storing to explicit mip levels, build a descriptor array with each mip level.
-    boost::container::small_vector<u32, 8> image_descriptor_array_sizes;
+    // D1: one entry per image (at most NUM_IMAGES, like image_bindings), never on the heap: with
+    // eight inline entries, every draw of a material with more textures allocated here.
+    boost::container::static_vector<u32, Shader::NUM_IMAGES> image_descriptor_array_sizes;
 
     for (const auto& image_desc : stage.images) {
         const auto tsharp = image_desc.GetSharp(stage);

@@ -17,6 +17,8 @@
 #include <csignal>
 #include <sys/ucontext.h>
 #endif
+#include <cstdlib>
+#include <cstring>
 #include <unordered_set>
 #include "exception.h"
 
@@ -651,6 +653,17 @@ void RegisterException(Core::Loader::SymbolsResolver* sym) {
                  sceKernelDebugRaiseExceptionOnReleaseMode);
     LIB_FUNCTION("WkwEd3N7w0Y", "libkernel", 1, "libkernel", sceKernelInstallExceptionHandler);
     LIB_FUNCTION("Qhv5ARAoOEc", "libkernel", 1, "libkernel", sceKernelRemoveExceptionHandler);
+    // D1: Destiny (CUSA00219) imports both from the libkernel_exception library, which had no
+    // registration, so they resolved to stubs: its fault handlers were never installed, and its
+    // fatal-error path ("Stub: sceKernelRemoveExceptionHandler", then ud2) crashed the emulator
+    // instead of ending the game as the console does. D1_EXCEPTION_HANDLERS=0 keeps the stubs.
+    if (const char* v = std::getenv("D1_EXCEPTION_HANDLERS"); !(v && std::strcmp(v, "0") == 0)) {
+        LIB_FUNCTION("WkwEd3N7w0Y", "libkernel_exception", 1, "libkernel",
+                     sceKernelInstallExceptionHandler);
+        LIB_FUNCTION("Qhv5ARAoOEc", "libkernel_exception", 1, "libkernel",
+                     sceKernelRemoveExceptionHandler);
+        LIB_FUNCTION("UDCI-WazohQ", "libkernel", 1, "libkernel", posix_sigaction); // _sigaction
+    }
 
     LIB_FUNCTION("KiJEPEWRyUY", "libkernel", 1, "libkernel", posix_sigaction);
     LIB_FUNCTION("VADc3MNQ3cM", "libkernel", 1, "libkernel", posix_signal);

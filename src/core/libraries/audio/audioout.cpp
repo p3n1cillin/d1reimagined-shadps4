@@ -16,6 +16,7 @@
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
 #include "core/libraries/audio/audioout_error.h"
+#include "core/libraries/audio/d1_audio_sync.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
 
@@ -168,8 +169,9 @@ static void AudioOutputThread(std::shared_ptr<PortOut> port, const std::stop_tok
         Common::SetCurrentThreadName(thread_name.c_str());
     }
 
-    Common::AccurateTimer timer(
-        std::chrono::nanoseconds(1000000000ULL * port->buffer_frames / port->sample_rate));
+    const u64 period_ns = 1000000000ULL * port->buffer_frames / port->sample_rate;
+    Common::AccurateTimer timer(std::chrono::nanoseconds(
+        D1AudioSync::Enabled() ? D1AudioSync::ThreadPeriodNs(period_ns) : period_ns)); // D1
 
     while (true) {
         timer.Start();

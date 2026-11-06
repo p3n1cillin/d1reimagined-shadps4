@@ -15,6 +15,7 @@
 #include "common/io_file.h"
 #include "common/logging/formatter.h"
 #include "common/scope_exit.h"
+#include "core/d1_native_mouse.h"
 #include "core/d1_video.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
@@ -210,6 +211,9 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
+    if (event.type == SDL_EVENT_MOUSE_MOTION) {
+        Core::D1NativeMouse::OnHostMouseMotion(event.motion.xrel, event.motion.yrel); // D1
+    }
     const bool d1_video = Core::D1Video::IsEnabled();
     if (d1_video) {
         // D1: ImGui must see BOTH edges before the raw keyboard library can consume an event.

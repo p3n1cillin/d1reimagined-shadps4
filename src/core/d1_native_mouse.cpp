@@ -14,9 +14,18 @@
 //                      record (base+0x273EFE0), the mouse movement is added to the record's look
 //                      rates
 //                      (+0x2CC yaw, +0x2D4 pitch) scaled by the frame's dt at [rbp-0x2DC]. This is
-//                      the 01.29 implementation's fallback route. While no menu cursor is active
-//                      the PC cursor is re-centred in the game window, so it moves the system
-//                      cursor: opt in only.
+//                      the 01.29 implementation's fallback route. The movement is the raw input
+//                      (SDL relative mode, Windows raw input: no pointer acceleration, no cursor
+//                      re-centring), switched on while no menu cursor is up and the game window
+//                      has focus, so the turn per count is the same at every frame rate.
+//                      D1_MOUSE_RAW=0 keeps the earlier route that re-centres the system cursor.
+//   D1_MOUSE_LOOK_SENS  look sensitivity (default D1_MOUSE_SENS, else 1).
+//   D1_MOUSE_ADS_SENS   multiplies it while aim (L2, control 0) is held (default 1).
+//   D1_MOUSE_INVERT_Y=1 inverts the mouse's pitch (the game's own invert setting acts on the
+//                      stick only).
+//                      No reticle friction or slowdown is added to the mouse, as on Destiny 2's PC
+//                      mouse; the weapons' own bullet magnetism is the game's and applies as on
+//                      the console. For the console's full stick aim assist, aim with a pad.
 //   D1_MOUSE_BUTTONS=1 mouse buttons merged into player 0's controls after pad selection (0x9284EF,
 //                      01.29 0x92684F): in menus LMB = cross, RMB = circle; in gameplay LMB = R2
 //                      (fire), RMB = L2 (aim), middle = R3 (melee), Mouse4 = square, Mouse5 =
@@ -34,6 +43,10 @@
 //                      = square (reload / interact), R = triangle (weapon), T / G = d-pad up /
 //                      down, End = L2, Ins = R2, PgDn / PgUp = controls 6 / 7, Z = 8, B = R3, WASD
 //                      move, arrows look.
+//   D1_PC_LAYOUT=1     the PC layout (input/d1_pc_layout.h, d1/PC-CONTROLS.md): the keyboard
+//                      through the pad config, plus the cursor, buttons and raw look above, and
+//                      Esc: circle (back) while a menu cursor is up, else Options (the character
+//                      screen).
 
 #include <algorithm>
 #include <array>
@@ -42,6 +55,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -49,11 +63,17 @@
 #include <windows.h>
 #endif
 
+#include <SDL3/SDL_init.h>
+#include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_mouse.h>
+
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "core/cpu_patches.h"
+#include "core/d1_mouse_look.h"
 #include "core/d1_native_mouse.h"
 #include "core/d1_video.h"
+#include "input/d1_pc_layout.h"
 
 namespace Core::D1NativeMouse {
 
@@ -70,9 +90,15 @@ constexpr u64 PlayerZeroInputRecord = 0x273EFE0; // per-player array 0x273ED40 +
 constexpr u64 DeltaTimeRbpOffset = 0x2DC;
 constexpr u64 LookYawRate = 0x2CC;
 constexpr u64 LookPitchRate = 0x2D4;
-constexpr float StickSecondsPerCount = 0.00025f; // 01.29 BaseStickSecondsPerCount
-constexpr float MaxCountsPerFrame = 400.0f;
+constexpr float MaxCountsPerFrame = 400.0f; // the re-centring route only
 std::atomic<u64> g_cursor_tick{0};
+bool g_raw = true;
+bool g_menu_esc = false;
+float g_look_sensitivity = 1.0f;
+float g_ads_sensitivity = 1.0f;
+bool g_invert_y = false;
+MotionAccumulator g_motion;
+std::atomic<int> g_relative{-1}; // the relative mode last asked for: -1 never, 0 off, 1 on
 
 constexpr u64 ActionsSite = 0x9284EF;
 constexpr std::array<u8, 5> ActionsSpan = {0xE8, 0x4C, 0x4C, 0x78, 0xFF}; // call 0xAD140
@@ -144,10 +170,33 @@ bool GameHasFocus() {
     return pid == GetCurrentProcessId() && !D1Video::IsOpen(); // D1: overlay owns input
 }
 
+void SDLCALL ApplyRelativeMode(void*) {
+    // On the main thread. The window is remembered from when it had focus, to switch back off.
+    static SDL_Window* window = nullptr;
+    if (SDL_Window* focus = SDL_GetKeyboardFocus(); focus != nullptr) {
+        window = focus;
+    }
+    if (window != nullptr) {
+        SDL_SetWindowRelativeMouseMode(window, g_relative.load() == 1);
+    }
+}
+
+/// Asks the window for relative (raw) mouse mode on or off; true when that changed the request.
+bool SetRelativeMode(bool on) {
+    if (g_relative.exchange(on ? 1 : 0) == (on ? 1 : 0)) {
+        return false;
+    }
+    SDL_RunOnMainThread(ApplyRelativeMode, nullptr, false);
+    return true;
+}
+
 void PS4_SYSV_ABI MoveCursor(D1DetourRegisters* regs, u64) {
     g_cursor_tick.store(GetTickCount64(), std::memory_order_release);
     static POINT last{};
     static bool have_last = false;
+    if (g_raw && SetRelativeMode(false)) {
+        have_last = false; // leaving relative mode may move the system cursor
+    }
     POINT now{};
     if (!GetCursorPos(&now)) {
         return;
@@ -215,9 +264,39 @@ void PS4_SYSV_ABI MouseLook(D1DetourRegisters* regs, u64) {
     if (dx == 0.0f && dy == 0.0f) {
         return; // an idle mouse leaves the stick's look alone
     }
-    const float gain = StickSecondsPerCount * g_sensitivity / dt;
+    const float gain = StickSecondsPerCount * g_look_sensitivity / dt;
     const float yaw = LoadFloat(regs->r13 + LookYawRate) - dx * gain;
     const float pitch = LoadFloat(regs->r13 + LookPitchRate) + dy * gain;
+    if (std::isfinite(yaw) && std::isfinite(pitch)) {
+        StoreFloat(regs->r13 + LookYawRate, yaw);
+        StoreFloat(regs->r13 + LookPitchRate, pitch);
+    }
+}
+
+/// Mouse look from raw input: the counts since the last gameplay frame, in relative mode.
+void PS4_SYSV_ABI MouseLookRaw(D1DetourRegisters* regs, u64) {
+    if (regs->r13 != MemoryPatcher::g_eboot_address + PlayerZeroInputRecord) {
+        return;
+    }
+    const bool play = !CursorActive() && GameHasFocus();
+    SetRelativeMode(play);
+    if (!play) {
+        g_motion.Clear(); // a menu or another window: no turn saved up for later
+        return;
+    }
+    const float dt = LoadFloat(regs->rbp - DeltaTimeRbpOffset);
+    if (!ValidLookDt(dt)) {
+        return; // the counts wait for the next frame
+    }
+    const auto [dx, dy] = g_motion.Take();
+    if (dx == 0.0f && dy == 0.0f) {
+        return; // an idle mouse leaves the stick's look alone
+    }
+    const auto* aim = reinterpret_cast<const u8*>(regs->r13); // control 0: L2, aim
+    const float sensitivity = g_look_sensitivity * (aim[2] != 0 ? g_ads_sensitivity : 1.0f);
+    const LookAdd add = LookRates(dx, dy, dt, sensitivity, g_invert_y);
+    const float yaw = LoadFloat(regs->r13 + LookYawRate) + add.yaw;
+    const float pitch = LoadFloat(regs->r13 + LookPitchRate) + add.pitch;
     if (std::isfinite(yaw) && std::isfinite(pitch)) {
         StoreFloat(regs->r13 + LookYawRate, yaw);
         StoreFloat(regs->r13 + LookPitchRate, pitch);
@@ -248,6 +327,36 @@ std::array<Key, 5> SampleButtons() {
     return out;
 }
 
+/// Esc as held time and frame count; a press that began outside the game (closing the Video
+/// panel, another window) is ignored until it is released.
+Key SampleEscape() {
+    static u64 down_since = 0;
+    static u8 frames = 0;
+    static bool blocked = false;
+    const bool focus = GameHasFocus();
+    const bool down = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+    if (!down) {
+        blocked = false;
+    } else if (!focus) {
+        blocked = true;
+    }
+    if (!down || blocked) {
+        down_since = 0;
+        frames = 0;
+        return {};
+    }
+    const u64 now = GetTickCount64();
+    if (down_since == 0) {
+        down_since = now;
+    }
+    frames = static_cast<u8>(std::min(255, frames + 1));
+    return {static_cast<u16>(std::min<u64>(0xFFFF, now - down_since)), frames};
+}
+
+Key Either(Key a, Key b) {
+    return {std::max(a.held_ms, b.held_ms), std::max(a.frames, b.frames)};
+}
+
 /// 01.29's ActionMerge: merge the mouse buttons into the selected pad's controls, keeping the pad.
 void PS4_SYSV_ABI MergeButtons(D1DetourRegisters*, u64) {
     static std::array<Key, 21> previous{};
@@ -262,7 +371,12 @@ void PS4_SYSV_ABI MergeButtons(D1DetourRegisters*, u64) {
         mouse[12] = buttons[3]; // Mouse4: square (reload / interact)
         mouse[11] = buttons[4]; // Mouse5: circle (crouch / slide)
     }
-    for (const unsigned i : {0u, 1u, 9u, 10u, 11u, 12u}) {
+    if (g_menu_esc) {
+        const unsigned esc = menu ? 11u : 6u; // Esc: circle (back) in menus, else Options
+        mouse[esc] = Either(mouse[esc], SampleEscape());
+    }
+    static constexpr std::array<unsigned, 7> merged_controls{0, 1, 9, 10, 11, 12, 6};
+    for (const unsigned i : std::span(merged_controls).first(g_menu_esc ? 7 : 6)) {
         u8* action = record + i * ActionStride;
         u16 held;
         float value;
@@ -370,10 +484,35 @@ void LoadKeyMap() {
 
 } // namespace
 
-void Install() {
-    if (const char* s = std::getenv("D1_MOUSE_SENS"); s != nullptr && *s != '\0') {
-        g_sensitivity = static_cast<float>(std::atof(s));
+void OnHostMouseMotion(float xrel, float yrel) {
+#ifdef _WIN32
+    if (g_relative.load(std::memory_order_relaxed) == 1) {
+        g_motion.Add(xrel, yrel); // raw counts: SDL's relative mode
     }
+#endif
+}
+
+namespace {
+float EnvFloat(const char* name, float fallback) {
+    const char* s = std::getenv(name);
+    if (s == nullptr || *s == '\0') {
+        return fallback;
+    }
+    const float v = static_cast<float>(std::atof(s));
+    return std::isfinite(v) && v > 0.0f ? v : fallback;
+}
+} // namespace
+
+void Install() {
+    g_sensitivity = EnvFloat("D1_MOUSE_SENS", 1.0f);
+    g_look_sensitivity = EnvFloat("D1_MOUSE_LOOK_SENS", g_sensitivity);
+    g_ads_sensitivity = EnvFloat("D1_MOUSE_ADS_SENS", 1.0f);
+    g_invert_y = EnvOn("D1_MOUSE_INVERT_Y");
+    if (const char* raw = std::getenv("D1_MOUSE_RAW"); raw && std::strcmp(raw, "0") == 0) {
+        g_raw = false;
+    }
+    const bool pc_layout = Input::D1PcLayout::Enabled();
+    g_menu_esc = pc_layout;
     if (EnvOn("D1_KBM")) {
 #ifdef _WIN32
         LoadKeyMap();
@@ -384,7 +523,9 @@ void Install() {
         }
 #endif
     }
-    if (EnvOn("D1_MOUSE_CURSOR") || EnvOn("D1_MOUSE_LOOK") || EnvOn("D1_MOUSE_BUTTONS")) {
+    const bool buttons = pc_layout || EnvOn("D1_MOUSE_BUTTONS");
+    const bool look = pc_layout || EnvOn("D1_MOUSE_LOOK");
+    if (pc_layout || EnvOn("D1_MOUSE_CURSOR") || look || buttons) {
 #ifdef _WIN32
         if (InstallD1Detour(CursorSite, CursorSpan, MoveCursor)) {
             LOG_INFO(Input, "D1 mouse: the menu cursor follows the host mouse (sensitivity {})",
@@ -392,16 +533,21 @@ void Install() {
         } else {
             LOG_ERROR(Input, "D1 mouse: the cursor detour was refused");
         }
-        if (EnvOn("D1_MOUSE_BUTTONS")) {
+        if (buttons) {
             if (InstallD1Detour(ActionsSite, ActionsSpan, MergeButtons)) {
-                LOG_INFO(Input, "D1 mouse: buttons merged into player 0's controls");
+                LOG_INFO(Input, "D1 mouse: buttons merged into player 0's controls{}",
+                         g_menu_esc ? " (and Esc)" : "");
             } else {
                 LOG_ERROR(Input, "D1 mouse: the buttons detour was refused");
             }
         }
-        if (EnvOn("D1_MOUSE_LOOK")) {
-            if (InstallD1Detour(LookSite, LookSpan, MouseLook)) {
-                LOG_INFO(Input, "D1 mouse: mouse look in gameplay (player 0, look-rate route)");
+        if (look) {
+            if (InstallD1Detour(LookSite, LookSpan, g_raw ? MouseLookRaw : MouseLook)) {
+                LOG_INFO(Input,
+                         "D1 mouse: mouse look in gameplay (player 0, look-rate route, {}; "
+                         "sensitivity {}, aiming x{}{})",
+                         g_raw ? "raw input" : "cursor re-centring", g_look_sensitivity,
+                         g_ads_sensitivity, g_invert_y ? ", inverted" : "");
             } else {
                 LOG_ERROR(Input, "D1 mouse: the look detour was refused");
             }

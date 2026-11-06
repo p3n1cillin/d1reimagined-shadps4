@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <cstring>
 #include <fmt/format.h>
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/decoder.h"
+#include "common/memory_patcher.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
 #include "core/libraries/kernel/kernel.h"
@@ -26,6 +29,16 @@ static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 namespace Core {
 
 #if defined(_WIN32)
+
+// D1: D1_CLEAN_EXIT (default on for CUSA00219, 0 = upstream) ends the process cleanly on an
+// unhandled guest exception instead of passing it on to Windows' crash reporting.
+static bool D1CleanExit() {
+    const char* v = std::getenv("D1_CLEAN_EXIT");
+    if (v != nullptr && *v != '\0') {
+        return std::strcmp(v, "0") != 0;
+    }
+    return MemoryPatcher::g_game_serial == "CUSA00219";
+}
 
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     using namespace Libraries::Kernel;
@@ -141,8 +154,18 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     const bool report_unhandled =
         use_static_windows_guest_red_zone_protection ? static_protection_exception : true;
     if (report_unhandled) {
-        LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
+        // D1: a ud2 that no guest handler takes is a title ending itself (Destiny's fatal-error
+        // path removes its SIGILL handler, then executes ud2); on the console the process ends.
+        const bool guest_ud2 = g_curthread != nullptr && code == EXCEPTION_ILLEGAL_INSTRUCTION &&
+                               address != nullptr && std::memcmp(address, "\x0F\x0B", 2) == 0;
+        LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}{}", code, address,
+                     guest_ud2 ? " (the guest's own fatal-error ud2: it ended itself)" : "");
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
+        if (g_curthread != nullptr && D1CleanExit()) {
+            // D1: end the process here with the exception code, as Windows would, without handing
+            // the exception on to Windows error reporting (its dialog and dump).
+            TerminateProcess(GetCurrentProcess(), code);
+        }
     }
 
     return EXCEPTION_CONTINUE_SEARCH;

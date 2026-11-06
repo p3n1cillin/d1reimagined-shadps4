@@ -5,6 +5,7 @@
 #include "common/debug.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
+#include "video_core/renderer_vulkan/d1_draw_perf.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -133,7 +134,15 @@ void Scheduler::Wait(u64 tick) {
 
 void Scheduler::PopPendingOperations() {
     std::unique_lock lk(pending_ops_mutex);
-    work_semaphore.Refresh();
+    // D1_DRAW_FAST: this runs before every draw and dispatch. Ask the driver for the timeline's
+    // value only when an operation could be due: none is waiting, or the first one belongs to the
+    // command buffer still being recorded (operations are queued in tick order).
+    if (D1DrawPerf::FastEnabled() &&
+        (pending_ops.empty() || pending_ops.front().gpu_tick >= work_semaphore.CurrentTick())) {
+        D1DrawPerf::Count(D1DrawPerf::Counter::PendingRefreshSkipped);
+    } else {
+        work_semaphore.Refresh();
+    }
     while (!pending_ops.empty() && work_semaphore.IsFree(pending_ops.front().gpu_tick)) {
         pending_ops.front().callback();
         pending_ops.pop();
@@ -238,6 +247,7 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     };
 
     ImGui::Core::TextureManager::Submit();
+    D1DrawPerf::Count(D1DrawPerf::Counter::Submits);
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 

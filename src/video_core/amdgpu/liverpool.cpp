@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstdlib>
 #include <mutex>
+#include <thread>
 #include <unordered_set>
 
 #include <boost/preprocessor/stringize.hpp>
@@ -21,6 +22,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/d1_draw_perf.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 namespace AmdGpu {
@@ -55,6 +57,21 @@ static const char* acb_task_name[] = NAME_ARRAY(ACB_TASK, MAX_NAMES);
 #define RESUME_ASC(task, id) RESUME(task, acb_task_name[id])
 
 std::array<u8, 48_KB> Liverpool::ConstantEngine::constants_heap;
+
+// D1_DRAW_STATS: a guest wait (WAIT_REG_MEM, a memory semaphore, a rewind, the CE/DE counters)
+// found unsatisfied. The task yields and the command processor resumes it straight away, so these
+// are spins of the GPU thread, on a core the game's own threads could use. D1_GPU_WAIT_YIELD=1:
+// past 256 spins of one wait, each further spin gives the rest of the time slice to another ready
+// thread first (std::this_thread::yield; on Windows SwitchToThread, which returns at once when
+// none is waiting).
+static void D1WaitSpin(Vulkan::D1DrawPerf::WaitSpin& spin) {
+    using namespace Vulkan::D1DrawPerf;
+    Count(Counter::WaitSpins);
+    if (spin.Spin(WaitYieldEnabled())) {
+        Count(Counter::WaitYields);
+        std::this_thread::yield();
+    }
+}
 
 static std::span<const u32> NextPacket(std::span<const u32> span, size_t offset) {
     if (offset > span.size()) {
@@ -195,7 +212,9 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
         }
         case PM4ItOpcode::WaitOnDeCounterDiff: {
             const auto diff = it_body[0];
+            Vulkan::D1DrawPerf::WaitSpin d1_spin;
             while ((cblock.de_count - cblock.ce_count) >= diff) {
+                D1WaitSpin(d1_spin);
                 YIELD_CE();
             }
             break;
@@ -790,7 +809,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (mem_semaphore->IsSignaling()) {
                     mem_semaphore->Signal();
                 } else {
+                    Vulkan::D1DrawPerf::WaitSpin d1_spin;
                     while (!mem_semaphore->Signaled()) {
+                        D1WaitSpin(d1_spin);
                         YIELD_GFX();
                     }
                     mem_semaphore->Decrement();
@@ -806,7 +827,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     break;
                 }
                 const PM4CmdRewind* rewind = reinterpret_cast<const PM4CmdRewind*>(header);
+                Vulkan::D1DrawPerf::WaitSpin d1_spin;
                 while (!rewind->Valid()) {
+                    D1WaitSpin(d1_spin);
                     YIELD_GFX();
                 }
                 break;
@@ -824,13 +847,16 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     vo_port->WaitVoLabel([&] { return wait_reg_mem->Test(regs.reg_array); });
                     break;
                 }
+                Vulkan::D1DrawPerf::WaitSpin d1_spin;
                 while (!wait_reg_mem->Test(regs.reg_array)) {
+                    D1WaitSpin(d1_spin);
                     YIELD_GFX();
                 }
                 break;
             }
             case PM4ItOpcode::IndirectBuffer: {
                 const auto* indirect_buffer = reinterpret_cast<const PM4CmdIndirectBuffer*>(header);
+                Vulkan::D1DrawPerf::Count(Vulkan::D1DrawPerf::Counter::GuestCommandBuffers);
                 auto task = ProcessGraphics(
                     {indirect_buffer->Address<const u32>(), indirect_buffer->ib_size}, {});
                 RESUME_GFX(task);
@@ -1029,7 +1055,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 break;
             }
             const PM4CmdRewind* rewind = reinterpret_cast<const PM4CmdRewind*>(header);
+            Vulkan::D1DrawPerf::WaitSpin d1_spin;
             while (!rewind->Valid()) {
+                D1WaitSpin(d1_spin);
                 YIELD_ASC(vqid);
             }
             break;
@@ -1120,7 +1148,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             if (mem_semaphore->IsSignaling()) {
                 mem_semaphore->Signal();
             } else {
+                Vulkan::D1DrawPerf::WaitSpin d1_spin;
                 while (!mem_semaphore->Signaled()) {
+                    D1WaitSpin(d1_spin);
                     YIELD_ASC(vqid);
                 }
                 mem_semaphore->Decrement();
@@ -1130,7 +1160,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         case PM4ItOpcode::WaitRegMem: {
             const auto* wait_reg_mem = reinterpret_cast<const PM4CmdWaitRegMem*>(header);
             ASSERT(wait_reg_mem->engine.Value() == PM4CmdWaitRegMem::Engine::Me);
+            Vulkan::D1DrawPerf::WaitSpin d1_spin;
             while (!wait_reg_mem->Test(regs.reg_array)) {
+                D1WaitSpin(d1_spin);
                 YIELD_ASC(vqid);
             }
             break;
@@ -1209,6 +1241,7 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
         std::tie(dcb, ccb) = CopyCmdBuffers(dcb, ccb);
     }
 
+    Vulkan::D1DrawPerf::Count(Vulkan::D1DrawPerf::Counter::GuestSubmits);
     auto task = ProcessGraphics(dcb, ccb);
     {
         std::scoped_lock lock{queue.m_access};

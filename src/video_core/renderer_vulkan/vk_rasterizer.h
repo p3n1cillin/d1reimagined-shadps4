@@ -123,6 +123,7 @@ private:
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
     bool BindResources(const Pipeline* pipeline);
 
+    void BindGraphicsPipeline(const GraphicsPipeline* pipeline);
     void BindVertexBuffers(const GraphicsPipeline* pipeline);
     void BindIndexBuffer(u32 index_offset = 0);
 

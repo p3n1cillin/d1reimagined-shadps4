@@ -14,6 +14,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/cache_storage.h"
+#include "video_core/renderer_vulkan/d1_draw_perf.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
@@ -339,6 +340,14 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (!RefreshGraphicsKey()) {
         return nullptr;
     }
+    // D1_DRAW_FAST: runs of draws with one technique share a key; comparing it with the last one
+    // is cheaper than hashing all of it and probing the map.
+    const bool d1_fast = D1DrawPerf::FastEnabled();
+    D1DrawPerf::Count(D1DrawPerf::Counter::PipelineLookups);
+    if (d1_fast && d1_last_pipeline && graphics_key == d1_last_key) {
+        D1DrawPerf::Count(D1DrawPerf::Counter::PipelineMemoHits);
+        return d1_last_pipeline;
+    }
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(graphics_key);
@@ -360,6 +369,10 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                 }
             }
         }
+    }
+    if (d1_fast) {
+        d1_last_key = graphics_key;
+        d1_last_pipeline = it->second.get();
     }
     return it->second.get();
 }
@@ -716,6 +729,7 @@ std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule mo
         }
     }
     if (module_related_pipelines.contains(module)) {
+        d1_last_pipeline = nullptr; // D1: the memo may name a pipeline erased here
         auto& pipeline_keys = module_related_pipelines[module];
         for (auto& key : pipeline_keys) {
             if (std::holds_alternative<GraphicsPipelineKey>(key)) {

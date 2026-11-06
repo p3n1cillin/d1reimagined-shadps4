@@ -39,17 +39,24 @@ A controller keeps working beside the keyboard, with the console's own aim assis
 | Confirm in menus | Enter, left mouse button | cross |
 | Back in menus | Esc, right mouse button | circle |
 | Mouse 4 / Mouse 5 | reload or interact / crouch | square / circle |
+| Face buttons | NumPad 2 / 4 / 6 / 8 | cross / square / circle / triangle |
 
 Destiny 2 has actions that D1 does not. These are left out: class ability, air move, finisher and
 text chat. D1 has no separate kinetic, energy and power slots. Its triangle swaps the primary and
 special weapons on a tap and draws the heavy weapon on a hold, so 1 and 2 both swap.
 
+The numpad keys keep the emulator's default face buttons (NumPad 2 is X), which the layout uses for
+nothing else. Scripts and tools that press them, such as the lab's contained boot (NumPad 2 at the
+title and in the character wizard), work the same with or without `D1_PC_LAYOUT`.
+
 ## Remapping
 
 With `D1_PC_LAYOUT=1`, the emulator reads `user/input_config/d1-pc.ini` instead of the game's own
 input file. It writes that file from the built-in layout the first time it starts, so you can edit it
-and press F8 in game to reload. Delete it to get the default back. The syntax is upstream shadPS4's
-(`documents/` and the emulator's Help).
+and press F8 in game to reload. Delete it to get the default back. A `d1-pc.ini` that is still an
+unedited copy of an earlier built-in layout is replaced with the current one at start; an edited one
+is left alone, so add the numpad lines above to it by hand if you want them. The syntax is upstream
+shadPS4's (`documents/` and the emulator's Help).
 
 Leave the mouse buttons and Esc out of that file: the D1 mouse layer handles them, so that they
 confirm and go back in menus and fire and aim in play. The emulator's own hotkeys are in

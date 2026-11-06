@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
@@ -56,6 +57,13 @@ touchpad_center = tab    # Ghost / Director
 touchpad_center = m
 cross = enter            # confirm
 
+# Numpad: the face buttons, as in the emulator's default layout. The layout uses no other numpad key,
+# so tools that press these (the lab's boot presses NumPad2 for X) work with it too.
+triangle = kp8
+circle = kp6
+cross = kp2
+square = kp4
+
 # Controller: any SDL gamepad keeps working beside the keyboard
 triangle = triangle
 cross = cross
@@ -87,6 +95,34 @@ analog_deadzone = r2, 5, 127
 
 override_controller_color = false, 0, 0, 255
 )";
+
+/// FNV-1a (64-bit) of a layout file, line endings ignored: the file is written in text mode.
+constexpr std::uint64_t Hash(std::string_view text) {
+    std::uint64_t h = 0xcbf29ce484222325ull;
+    for (const char c : text) {
+        if (c != '\r') {
+            h = (h ^ static_cast<unsigned char>(c)) * 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+
+/// Hashes of earlier built-in layouts. A d1-pc.ini that still matches one was written by an earlier
+/// build and never edited, so the emulator replaces it with the current layout.
+constexpr std::uint64_t EarlierTexts[] = {
+    0x1614c87ccd572630ull, // before the numpad face buttons (6 Nov 2026)
+};
+
+/// True if `file` is an unedited copy of an earlier built-in layout.
+constexpr bool IsEarlierDefault(std::string_view file) {
+    const std::uint64_t h = Hash(file);
+    for (const std::uint64_t earlier : EarlierTexts) {
+        if (h == earlier) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /// D1_PC_LAYOUT=1: the PC layout above (and the D1 mouse layer) for CUSA00219.
 inline bool Enabled() {

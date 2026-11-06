@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2026 D1 Reimagined contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Every binding in the D1 PC layout names an output and inputs the input parser knows, and no key
-// is bound to two actions except the deliberate super chord (F: L1 + R1).
+// is bound to two actions except the deliberate super chord (F: L1 + R1). The numpad keeps the
+// emulator default's face buttons (the lab's boot presses NumPad2 for X), and an unedited file from
+// an earlier layout is recognised whatever its line endings.
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <sstream>
@@ -14,6 +17,12 @@
 
 int main() {
     using namespace Input;
+#ifdef _WIN32
+    _putenv_s("D1_PC_LAYOUT", "1");
+#else
+    setenv("D1_PC_LAYOUT", "1", 1);
+#endif
+    assert(D1PcLayout::Enabled());
     std::istringstream text{std::string(D1PcLayout::Text)};
     std::string line;
     std::map<std::string, std::set<std::string>> outputs_of_key;
@@ -50,6 +59,19 @@ int main() {
     for (const auto& [key, outputs] : outputs_of_key) {
         assert(outputs.size() == 1 || (key == "f" && outputs == std::set<std::string>{"l1", "r1"}));
     }
+    // NumPad2 presses cross with the PC layout on, as without it, and so do the other face buttons.
+    assert(outputs_of_key["kp2"] == std::set<std::string>{"cross"});
+    assert(outputs_of_key["kp4"] == std::set<std::string>{"square"});
+    assert(outputs_of_key["kp6"] == std::set<std::string>{"circle"});
+    assert(outputs_of_key["kp8"] == std::set<std::string>{"triangle"});
+    // The current layout is not taken for an earlier one, and CRLF files hash as LF ones.
+    std::string crlf;
+    for (const char c : D1PcLayout::Text) {
+        crlf += c == '\n' ? "\r\n" : std::string(1, c);
+    }
+    assert(D1PcLayout::Hash(crlf) == D1PcLayout::Hash(D1PcLayout::Text));
+    assert(!D1PcLayout::IsEarlierDefault(D1PcLayout::Text));
+    assert(!D1PcLayout::IsEarlierDefault(crlf + "# edited\n"));
     // Mouse buttons and Esc belong to the D1 mouse layer, not the pad config.
     for (const char* reserved : {"leftbutton", "rightbutton", "middlebutton", "sidebuttonback",
                                  "sidebuttonforward", "escape"}) {

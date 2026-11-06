@@ -362,9 +362,20 @@ void ParseInputConfig(const std::string game_id = "") {
         EmulatorSettings.IsUseUnifiedInputConfig() ? "default" : game_id;
     auto config_file = GetInputConfigFile(game_id_or_default);
     if (game_id == "CUSA00219" && D1PcLayout::Enabled()) {
-        // D1: D1_PC_LAYOUT=1 reads the PC layout, written from the built-in one when missing.
+        // D1: D1_PC_LAYOUT=1 reads the PC layout, written from the built-in one when missing or
+        // when it is an unedited copy of an earlier built-in layout.
         config_file = config_file.parent_path() / D1PcLayout::FileName;
-        if (!std::filesystem::exists(config_file)) {
+        bool write = !std::filesystem::exists(config_file);
+        if (!write) {
+            std::ifstream in(config_file, std::ios::binary);
+            std::stringstream contents;
+            contents << in.rdbuf();
+            write = D1PcLayout::IsEarlierDefault(contents.str());
+            if (write) {
+                LOG_INFO(Input, "D1 PC layout: replacing an unedited earlier default");
+            }
+        }
+        if (write) {
             std::ofstream out(config_file);
             out << D1PcLayout::Text;
         }

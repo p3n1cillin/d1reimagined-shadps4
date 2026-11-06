@@ -11,10 +11,11 @@
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
-#include "core/emulator_state.h"
-#include "core/file_format/psf.h"
 #include "core/d1_frame_rate.h"
 #include "core/d1_native_mouse.h"
+#include "core/d1_stability.h"
+#include "core/emulator_state.h"
+#include "core/file_format/psf.h"
 #include "memory_patcher.h"
 
 namespace MemoryPatcher {
@@ -277,6 +278,7 @@ void OnGameLoaded() {
     ApplyPendingPatches();
     Core::D1NativeMouse::Install();
     Core::D1FrameRate::Install();
+    Core::D1Stability::Install();
 }
 
 void AddPatchToQueue(const patchInfo& patchToAdd) {

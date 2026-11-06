@@ -980,6 +980,8 @@ if (ARCHITECTURE STREQUAL "x86_64")
              src/core/d1_tag_override.h
              src/core/d1_native_mouse.cpp
              src/core/d1_native_mouse.h
+             src/core/d1_stability.cpp
+             src/core/d1_stability.h
              src/core/cpu_patches.h
              ${FIBER_LIB})
 endif()

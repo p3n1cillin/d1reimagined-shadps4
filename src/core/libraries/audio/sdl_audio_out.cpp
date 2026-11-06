@@ -18,6 +18,7 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
+#include "core/libraries/audio/d1_audio_sync.h"
 #include "core/libraries/kernel/threads.h"
 
 // SIMD support detection
@@ -89,7 +90,11 @@ public:
         UpdateVolumeIfChanged();
         const u64 current_time = Kernel::sceKernelGetProcessTime();
         convert(ptr, internal_buffer, buffer_frames, nullptr);
-        HandleTiming(current_time);
+        if (d1_sync) {
+            PaceToDevice(); // D1_AUDIO_SYNC: the device's queue sets the pace
+        } else {
+            HandleTiming(current_time);
+        }
 
         if ((output_count++ & 0xF) == 0) { // Check every 16 outputs
             ManageAudioQueue();
@@ -284,6 +289,18 @@ private:
         } else {
             // Slightly behind or on time - just advance
             next_output_time += period_us;
+        }
+    }
+
+    // D1: wait while the host stream holds more than its target (two game buffers), for at most
+    // two periods, so a stopped device can't hold the game's audio thread.
+    void PaceToDevice() {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::microseconds(2 * period_us);
+        const auto step = std::chrono::microseconds(std::max<u64>(500, period_us / 8));
+        while (static_cast<u32>(std::max(0, SDL_GetAudioStreamQueued(stream))) > d1_target_bytes &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(step);
         }
     }
 
@@ -538,6 +555,13 @@ private:
 
         const u32 sdl_buffer_size = sdl_buffer_frames * sizeof(float) * num_channels;
         queue_threshold = std::max(guest_buffer_size, sdl_buffer_size) * QUEUE_MULTIPLIER;
+        if (d1_sync) {
+            // D1: in the stream's own bytes (downmixed to stereo when the device is stereo).
+            queue_threshold = D1AudioSync::ClearThresholdBytes(
+                internal_buffer_size, static_cast<u32>(std::max(0, sdl_buffer_frames)),
+                ps4_downmix ? 2u : num_channels);
+            d1_target_bytes = D1AudioSync::TargetQueueBytes(internal_buffer_size);
+        }
 
         LOG_DEBUG(Lib_AudioOut, "Audio queue threshold: {} bytes (SDL buffer: {} frames)",
                   queue_threshold, sdl_buffer_frames);
@@ -682,6 +706,9 @@ private:
     u64 next_output_time{0};
     u64 last_volume_check_time{0};
     u32 output_count{0};
+    // D1 audio sync
+    const bool d1_sync{D1AudioSync::Enabled()};
+    u32 d1_target_bytes{0};
     // D1 audio tap
     u32 tap_count{0};
     u32 tap_port{~0u};

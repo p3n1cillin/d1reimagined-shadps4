@@ -10,12 +10,14 @@
 
 #include <SDL3/SDL.h>
 
+#include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
 #include "input/controller.h"
+#include "input/d1_pc_layout.h"
 
 namespace Input {
 
@@ -269,6 +271,17 @@ bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
 
 static bool is_first_check = true;
 
+// D1: D1_PAD_KEEP_KEYBOARD=1 (default with D1_PC_LAYOUT=1) keeps player 1's controller connected
+// through the keyboard when its pad is unplugged, so a keyboard player keeps the game's controller.
+// Unset (without the PC layout) keeps upstream's disconnect, which the game shows as on the
+// console.
+static bool D1KeepKeyboardPad() {
+    if (const char* v = std::getenv("D1_PAD_KEEP_KEYBOARD"); v != nullptr && *v != '\0') {
+        return std::strcmp(v, "0") != 0;
+    }
+    return Common::ElfInfo::Instance().GameSerial() == "CUSA00219" && D1PcLayout::Enabled();
+}
+
 void GameControllers::TryOpenSDLControllers() {
     using namespace Libraries::UserService;
     int controller_count;
@@ -291,7 +304,14 @@ void GameControllers::TryOpenSDLControllers() {
                     break;
                 }
             }
-            if (!still_connected) {
+            if (!still_connected && i == 0 && D1KeepKeyboardPad()) {
+                // D1: the first player's pad went away: the slot stays connected, driven by the
+                // keyboard and mouse as at a boot with no pad, until a pad takes it again.
+                LOG_INFO(Input, "D1: pad 0 removed; the keyboard keeps player 1's controller");
+                SDL_CloseGamepad(pad);
+                controllers[i]->ConnectController(nullptr);
+                slot_taken[i] = false;
+            } else if (!still_connected) {
                 SDL_CloseGamepad(pad);
                 controllers[i]->DisconnectController();
                 controllers[i]->user_id = -1;

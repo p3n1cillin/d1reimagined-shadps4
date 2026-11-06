@@ -27,6 +27,7 @@
 #include "core/emulator_state.h"
 #include "imgui/big_picture/settings_dialog_layer.h"
 #include "input/controller.h"
+#include "input/d1_pc_layout.h"
 #include "input/input_mouse.h"
 
 namespace Input {
@@ -359,7 +360,16 @@ std::optional<int> parseInt(const std::string& s) {
 void ParseInputConfig(const std::string game_id = "") {
     std::string game_id_or_default =
         EmulatorSettings.IsUseUnifiedInputConfig() ? "default" : game_id;
-    const auto config_file = GetInputConfigFile(game_id_or_default);
+    auto config_file = GetInputConfigFile(game_id_or_default);
+    if (game_id == "CUSA00219" && D1PcLayout::Enabled()) {
+        // D1: D1_PC_LAYOUT=1 reads the PC layout, written from the built-in one when missing.
+        config_file = config_file.parent_path() / D1PcLayout::FileName;
+        if (!std::filesystem::exists(config_file)) {
+            std::ofstream out(config_file);
+            out << D1PcLayout::Text;
+        }
+        LOG_INFO(Input, "D1 PC layout: {}", config_file.string());
+    }
     const auto global_config_file = GetInputConfigFile("global");
 
     // we reset these here so in case the user fucks up or doesn't include some of these,

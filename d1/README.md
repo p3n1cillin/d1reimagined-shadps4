@@ -105,7 +105,8 @@ of each command buffer. The emulator turns every one of those draws into Vulkan 
 thread, the GPU command processor. When its CPU cost per draw times the draws in a frame exceeds the
 frame time, the frame rate falls while the host GPU waits.
 
-`D1_DRAW_STATS=1` logs one line a second (`Render_Vulkan`, info):
+`D1_DRAW_STATS=1` logs one line a second (`Lib_VideoOut`, info, like `D1_FPS`, so a filter such as
+`*:Info Render_Vulkan:Error` still shows it):
 
 ```
 D1 draw stats: 182000 draws/s (0 indirect), 2400 dispatches/s, 120 submits/s, 60 guest submits/s

@@ -41,7 +41,7 @@ void MaybeLog() {
     auto& w = Stats();
     const Summary s = Summarize(w, static_cast<double>(now - start) / 1e9);
     const double per_s = 1.0 / s.seconds;
-    LOG_INFO(Render_Vulkan,
+    LOG_INFO(Lib_VideoOut,
              "D1 draw stats: {:.0f} draws/s ({:.0f} indirect), {:.0f} dispatches/s, {:.0f} "
              "submits/s, {:.0f} guest submits/s with {:.0f} command buffers/s; {:.2f} us a call "
              "(pipeline {:.2f}, resources {:.2f}, record {:.2f}), slowest {:.0f} us; GPU thread "

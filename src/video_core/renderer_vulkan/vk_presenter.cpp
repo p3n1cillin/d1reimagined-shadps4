@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -414,7 +415,8 @@ static bool WritePng(const std::filesystem::path& path, const std::span<const u8
 // D1: D1_SCREENSHOT_TOAST=0 saves screenshots without the "Saved screenshot" notification. Each
 // notification decodes the saved PNG into a GPU texture and shows it for 3 s, one at a time, so a lab
 // bot taking a screenshot several times a second (it reads the game's frames this way when the
-// monitor is off) queued them until the GPU ran out of memory (run agr41, 7 November).
+// monitor is off) queued them until the GPU ran out of memory (run agr41, 7 November). With
+// the notification off, the PNG is also encoded and written off the draw scheduler (below).
 static bool D1ScreenshotToast() {
     static const bool on = [] {
         const char* v = std::getenv("D1_SCREENSHOT_TOAST");
@@ -430,6 +432,25 @@ static void SavePendingScreenshot(const ScreenshotReadback& readback) {
 
     std::vector<u8> rgba;
     if (!ConvertReadbackToRgba8(readback, rgba)) {
+        return;
+    }
+
+    if (!D1ScreenshotToast()) {
+        // D1: with no notification nothing else needs the file here, so encode and write it on
+        // its own thread. This runs as a deferred operation of the draw scheduler, and a 1080p PNG
+        // takes a few hundred milliseconds: a lab bot reading frames this way every second blocked
+        // the game's GPU work until its own watchdog stopped it (BLOCK_DETECT, runs agr45 and
+        // agr46, 7 November).
+        std::thread([paths = readback.paths, rgba = std::move(rgba), width = readback.width,
+                     height = readback.height]() {
+            for (const auto& path : paths) {
+                if (!WritePng(path, rgba, width, height)) {
+                    LOG_ERROR(Render_Vulkan, "Failed saving screenshot to {}", path.string());
+                } else {
+                    LOG_INFO(Render_Vulkan, "Saved screenshot: {}", path.string());
+                }
+            }
+        }).detach();
         return;
     }
 

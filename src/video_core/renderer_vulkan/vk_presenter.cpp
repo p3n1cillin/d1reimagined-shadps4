@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -410,6 +411,18 @@ static bool WritePng(const std::filesystem::path& path, const std::span<const u8
     return stbi_write_png_to_func(callback, &file, width, height, 4, rgba.data(), 0);
 }
 
+// D1: D1_SCREENSHOT_TOAST=0 saves screenshots without the "Saved screenshot" notification. Each
+// notification decodes the saved PNG into a GPU texture and shows it for 3 s, one at a time, so a lab
+// bot taking a screenshot several times a second (it reads the game's frames this way when the
+// monitor is off) queued them until the GPU ran out of memory (run agr41, 7 November).
+static bool D1ScreenshotToast() {
+    static const bool on = [] {
+        const char* v = std::getenv("D1_SCREENSHOT_TOAST");
+        return !(v != nullptr && std::strcmp(v, "0") == 0);
+    }();
+    return on;
+}
+
 static void SavePendingScreenshot(const ScreenshotReadback& readback) {
     if (readback.paths.empty()) {
         return;
@@ -428,14 +441,17 @@ static void SavePendingScreenshot(const ScreenshotReadback& readback) {
 
     LOG_INFO(Render_Vulkan, "Saved screenshot: {}", primary_path.string());
 
-    std::ifstream file(primary_path, std::ios::binary);
-    std::vector<u8> imgdata;
-    if (file) {
-        imgdata =
-            std::vector<u8>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    const bool toast = D1ScreenshotToast();
+    if (toast) {
+        std::ifstream file(primary_path, std::ios::binary);
+        std::vector<u8> imgdata;
+        if (file) {
+            imgdata = std::vector<u8>(std::istreambuf_iterator<char>(file),
+                                      std::istreambuf_iterator<char>());
+        }
+        shadNotifications::QueueNotification("Saved screenshot:\n" + primary_path.string(), 3.0f,
+                                             shadNotifications::position::BottomRight, imgdata);
     }
-    shadNotifications::QueueNotification("Saved screenshot:\n" + primary_path.string(), 3.0f,
-                                         shadNotifications::position::BottomRight, imgdata);
 
     for (size_t i = 1; i < readback.paths.size(); ++i) {
         const auto& path = readback.paths[i];
@@ -451,6 +467,9 @@ static void SavePendingScreenshot(const ScreenshotReadback& readback) {
         }
 
         LOG_INFO(Render_Vulkan, "Saved screenshot: {}", path.string());
+        if (!toast) {
+            continue;
+        }
         std::ifstream file(path, std::ios::binary);
         std::vector<u8> imgdata;
         if (file) {

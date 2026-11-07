@@ -110,6 +110,11 @@ public:
     }
 
     /// Returns true if 8-bit ints are supported in shaders
+    /// D1 (F51): host query reset (Vulkan 1.2), for the occlusion queries' pool.
+    bool IsHostQueryResetSupported() const {
+        return vk12_features.hostQueryReset;
+    }
+
     bool IsShaderInt8Supported() const {
         return vk12_features.shaderInt8;
     }

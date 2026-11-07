@@ -124,6 +124,7 @@ struct IndexBufferBind {
     std::uint64_t buffer;
     std::uint64_t offset;
     std::uint32_t type;
+    std::uint64_t size;
     bool operator==(const IndexBufferBind&) const = default;
 };
 

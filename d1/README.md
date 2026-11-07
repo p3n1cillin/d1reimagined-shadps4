@@ -1,9 +1,11 @@
 # shadPS4 for D1 Reimagined
 
 This is the shadPS4 build the [D1 Reimagined](https://github.com/p3n1cillin/d1reimagined-source)
-project uses to run Destiny (PS4, CUSA00219, build 56578 / 01.33) against its own servers. It is
-upstream shadPS4 **v0.19.0** (`c7e065d`, "tagged 0.19.0 release") plus a short series of commits
-on the `d1` branch. Everything here is GPL-2.0-or-later, like upstream.
+project uses to run Destiny (PS4, CUSA00219, build 56578 / 01.33) against its own servers. It started
+from upstream shadPS4 **v0.19.0** (`c7e065d`); the 7 November integration merges upstream main
+`50c5c1b` (0.21.1 WIP) while retaining the D1 series. See the
+[merge notes](../notes/D1-UPSTREAM-MERGE-2026-11-07.md) for the ports and validation still required.
+Everything here is GPL-2.0-or-later, like upstream.
 
 Nothing in this repository is game data. You need your own legally dumped copy of the game and
 your own console's system modules; see "What is not here" below.
@@ -78,6 +80,7 @@ All are off unless set. None of them changes behaviour that upstream games rely 
 | `D1_NATIVE_VIDEO_DIR=<private-directory>` | Selects the native Settings → Display directory on 56578 when D1 Video is enabled. Without an override, installing the generated directory as `d1-native-video` under the emulator's user directory enables the controls on ordinary launches. Generate it with the source project's `d1-cui-video.py`, using the authored Helmet group for `--template-group` and `--existing-group`, `--group-title Display`, and the decoded English string inputs. This keeps the Helmet setting and adds Frame Rate and Resolution with the same persistence and restart behavior as F10. The loader compares original decoded tags before applying candidate data. Added labels are English. The separate `--graph` mode remains experimental. Keep generated files and original game inputs private. |
 | `D1_NATIVE_VIDEO_TRACE=1` | With the native-settings experiment, logs a bounded set of string lookup results and invalid candidate entry addresses. Uses matched 56578 instructions and leaves lookup results unchanged; avoids attaching an exception debugger during menu loading. Off by default. |
 | `D1_GUEST_IP=a.b.c.d` | The guest's own IP address. Used only if it belongs to this machine; otherwise a UDP route probe picks it (nothing is sent). |
+| `D1_NET_DIAG=1` | Logs guest socket receive/send calls, bytes, empty receives and queued bytes every 2 s on socket activity. Uses guest socket IDs in the rewritten network stack, counts nested sendmsg/recvmsg calls once, preserves socket errors and clears counters when a socket closes. |
 | `D1_VOLUME_SLICES=0..3` | How a render target over the colour-grading LUT is handled. Default 3 (a fresh 2D image, the fix); 1 and 2 are earlier experiments; 0 is upstream's handling of that case. The other LUT fixes (expanding, extending the predecessor) are always on. |
 | `D1_AUDIO_TAP=DIR` | While `DIR/rec.flag` exists, every audio port writes its float samples to `DIR/port<N>-<rate>-<channels>-<unix ms>.f32`. The project's `tools/ps4_setup/d1-record.py` creates the flag, captures the window and muxes the clip. |
 | `D1_MOUSE_PROBE=1` | Detours the menu cursor update (56578, 0x985D00) and logs the UI root and cursor position at the first hits; changes nothing. Proves the detour framework (`InstallD1Detour`). |
@@ -91,6 +94,8 @@ All are off unless set. None of them changes behaviour that upstream games rely 
 | `D1_DUMP_DIR=DIR` | Creating `DIR.flag` dumps every texture sampled in the next ~0.2 s (raw, linear, in draw order) plus `events.txt`. |
 | `D1_TEX_SURVEY=1` | Logs each shader's distinct texture shapes and the render targets each pixel shader writes, once. |
 | `D1_TRACE_IMAGE=<hex address>` | Traces the texture cache's lookups, creation, expansion and freeing at that address. |
+| `D1_TRACE_WIDTH=N` | Logs each newly created image N texels wide once per guest address, to diagnose resolution coverage. |
+| `D1_TRACE_COVER=N` | Logs matching viewport/scissor edges, compute dispatch widths and the guest command words that set coverage to N, to diagnose resolution coverage. |
 | `D1_META_RUN=1` | Still runs a compute dispatch over memory once registered as HTILE (diagnostic). |
 | `D1_DRAW_FAST=0` | Restores upstream's draw path. By default (on), a graphics pipeline, vertex input layout, vertex buffer or index buffer bind that repeats what the current Vulkan command buffer already has is not recorded again, the graphics pipeline lookup compares the key with the last one before hashing it, and the scheduler doesn't query the GPU timeline before a draw when no deferred operation can be due. Each is exact by the Vulkan rules (the remembered state is forgotten on every new command buffer and after the blit helper binds its own pipelines); see "Measuring the draw path". |
 | `D1_GPU_WAIT_YIELD=1` | Experimental, off by default. A guest wait on the GPU command processor (WAIT_REG_MEM, a memory semaphore, a rewind, the CE/DE counters) that has spun 256 times yields the thread's time slice on each further spin, so a long wait leaves the core to the game's threads. It may also delay noticing the wait's end, so check it with `D1_DRAW_STATS` ("guest wait spins") and the frame rate before using it. |

@@ -650,39 +650,35 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
         count = (occlusion->next + Occlusion::PoolSize - first) % Occlusion::PoolSize;
         occlusion->interval_first = occlusion->next;
     }
-    // Until the GPU has run the draws, the dump's slots hold no valid count (the game polls the
-    // valid bit, and keeps its last result meanwhile).
-    for (u32 i = 0; i < pairs; ++i) {
-        results[2 * i] &= ~ValidBit;
-    }
+    // The game reads the dump right after it (lens flares, the tripmines' glare): a dump written
+    // later, by a deferred operation, read as "not yet valid" and every flare stayed hidden (run
+    // gh10, 8 November). So the draws before it are finished now and the count written at once.
+    scheduler.Finish();
     const vk::Device device = instance.GetDevice();
     const vk::QueryPool pool = *occlusion->pool;
-    Occlusion* occ = occlusion.get();
-    scheduler.DeferOperation([occ, device, pool, results, pairs, first, count] {
-        u64 samples = 0;
-        std::vector<u64> data(count);
-        for (u32 done = 0; done < count;) {
-            const u32 at = (first + done) % Occlusion::PoolSize;
-            const u32 run = std::min(count - done, Occlusion::PoolSize - at);
-            const vk::Result r = device.getQueryPoolResults(
-                pool, at, run, run * sizeof(u64), data.data() + done, sizeof(u64),
-                vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
-            if (r == vk::Result::eSuccess) {
-                for (u32 k = done; k < done + run; ++k) {
-                    samples += data[k];
-                }
+    u64 samples = 0;
+    std::vector<u64> data(count);
+    for (u32 done = 0; done < count;) {
+        const u32 at = (first + done) % Occlusion::PoolSize;
+        const u32 run = std::min(count - done, Occlusion::PoolSize - at);
+        const vk::Result r = device.getQueryPoolResults(
+            pool, at, run, run * sizeof(u64), data.data() + done, sizeof(u64),
+            vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+        if (r == vk::Result::eSuccess) {
+            for (u32 k = done; k < done + run; ++k) {
+                samples += data[k];
             }
-            device.resetQueryPool(pool, at, run);
-            done += run;
         }
-        std::scoped_lock lk{occ->mutex};
-        occ->in_flight -= std::min(occ->in_flight, count);
-        occ->total += samples;
-        results[0] = occ->total | ValidBit;
-        for (u32 i = 1; i < pairs; ++i) {
-            results[2 * i] = ValidBit;
-        }
-    });
+        device.resetQueryPool(pool, at, run);
+        done += run;
+    }
+    std::scoped_lock lk{occlusion->mutex};
+    occlusion->in_flight -= std::min(occlusion->in_flight, count);
+    occlusion->total += samples;
+    results[0] = occlusion->total | ValidBit;
+    for (u32 i = 1; i < pairs; ++i) {
+        results[2 * i] = ValidBit;
+    }
     return true;
 }
 

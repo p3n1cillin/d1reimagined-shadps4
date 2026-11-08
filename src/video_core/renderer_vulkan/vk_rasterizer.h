@@ -109,7 +109,7 @@ public:
 
 private:
     /// D1 (F51): a query around each draw while the game counts occlusion.
-    bool OcclusionBegin(vk::CommandBuffer cmdbuf);
+    bool OcclusionBegin(vk::CommandBuffer cmdbuf, const RenderState& state);
     void OcclusionEnd(vk::CommandBuffer cmdbuf, bool began);
     struct Occlusion;
     std::unique_ptr<Occlusion> occlusion;

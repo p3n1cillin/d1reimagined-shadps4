@@ -186,6 +186,8 @@ struct Rasterizer::Occlusion {
     bool armed = false;     // a dump was seen: draws are counted
     bool precise = false;   // occlusionQueryPrecise: exact sample counts (F51)
     u32 logged = 0;         // the first dumps' counts go to the log (warning level)
+    u32 logged_short = 0;   // short intervals (a flare's disc) logged with their draws' state
+    std::vector<std::string> recent; // the current interval's first draws, described
     u64 total = 0;          // samples counted, in dump order (deferred operations run in order)
     std::mutex mutex;
 };
@@ -406,7 +408,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
-    const bool counted = OcclusionBegin(cmdbuf);
+    const bool counted = OcclusionBegin(cmdbuf, state);
     if (is_indexed) {
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
                            s32(vertex_offset), instance_offset);
@@ -473,7 +475,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
-    const bool counted = OcclusionBegin(cmdbuf);
+    const bool counted = OcclusionBegin(cmdbuf, state);
     if (is_indexed) {
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
 
@@ -618,11 +620,35 @@ void Rasterizer::OnFence() {
     texture_cache.ProcessDownloadImages();
 }
 
-bool Rasterizer::OcclusionBegin(vk::CommandBuffer cmdbuf) {
+bool Rasterizer::OcclusionBegin(vk::CommandBuffer cmdbuf, const RenderState& state) {
     if (!occlusion || !occlusion->armed) {
         return false;
     }
     std::scoped_lock lk{occlusion->mutex};
+    // D1 (F51 diagnosis): describe the first draws of each interval; a short interval (a flare's
+    // query disc between its begin and end dumps) is logged with them at the dump.
+    if (occlusion->recent.size() < 4 && occlusion->logged_short < 600) {
+        const auto& regs = liverpool->regs;
+        const auto& vp = regs.viewports[0];
+        const auto& vd = regs.viewport_depths[0];
+        const auto& dc = regs.depth_control;
+        const auto& sc = regs.viewport_scissors[0];
+        occlusion->recent.push_back(fmt::format(
+            "prim {} n {} inst {} | z en {} wr {} func {} bounds {} [{} {}] stencil {} | cc mode {} "
+            "tmask {:#x} | vp x {}*{} y {}*{} z {}*{} [{} {}] | scissor {}x{}-{}x{} | db {}x{} "
+            "s{} valid {} ro {} | att depth {} colors {} area {}x{} | aa {} | drc {:#x}",
+            u32(regs.primitive_type), regs.num_indices, regs.num_instances.NumInstances(),
+            u32(dc.depth_enable), u32(dc.depth_write_enable), u32(dc.depth_func),
+            u32(dc.depth_bounds_enable), regs.depth_bounds_min, regs.depth_bounds_max,
+            u32(dc.stencil_enable), u32(regs.color_control.mode), regs.color_target_mask.raw,
+            vp.xscale, vp.xoffset, vp.yscale, vp.yoffset, vp.zscale, vp.zoffset, vd.zmin, vd.zmax,
+            u32(sc.top_left_x), u32(sc.top_left_y), u32(sc.bottom_right_x), u32(sc.bottom_right_y),
+            regs.depth_buffer.Pitch(), regs.depth_buffer.Height(), regs.depth_buffer.NumSamples(),
+            u32(regs.depth_buffer.DepthValid()), u32(regs.depth_view.z_read_only),
+            state.depth_stencil_attachment.image_view ? 1 : 0, state.num_color_attachments,
+            state.width, state.height, regs.aa_config.NumSamples(),
+            std::bit_cast<u32>(regs.depth_render_control)));
+    }
     if (occlusion->in_flight + 1 >= Occlusion::PoolSize) {
         return false; // every slot is waiting to be read: this draw goes uncounted
     }
@@ -657,6 +683,11 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
         count = (occlusion->next + Occlusion::PoolSize - first) % Occlusion::PoolSize;
         occlusion->interval_first = occlusion->next;
     }
+    std::vector<std::string> described;
+    {
+        std::scoped_lock lk{occlusion->mutex};
+        described.swap(occlusion->recent);
+    }
     // The game reads the dump right after it (lens flares, the tripmines' glare): a dump written
     // later, by a deferred operation, read as "not yet valid" and every flare stayed hidden (run
     // gh10, 8 November). So the draws before it are finished now and the count written at once.
@@ -686,6 +717,13 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
         ++occlusion->logged;
         LOG_WARNING(Render_Vulkan, "D1_OCCLUSION dump: {} draws, {} samples (precise {})", count, samples,
                     occlusion->precise);
+    }
+    if (count > 0 && count <= 4 && occlusion->logged_short < 600) {
+        ++occlusion->logged_short;
+        LOG_WARNING(Render_Vulkan, "D1_OCCLUSION short: {} draws, {} samples", count, samples);
+        for (const auto& d : described) {
+            LOG_WARNING(Render_Vulkan, "D1_OCCLUSION   draw: {}", d);
+        }
     }
     results[0] = occlusion->total | ValidBit;
     for (u32 i = 1; i < pairs; ++i) {

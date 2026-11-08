@@ -641,7 +641,9 @@ bool Rasterizer::OcclusionBegin(vk::CommandBuffer cmdbuf) {
         return false; // every slot is waiting to be read: this draw goes uncounted
     }
     // D1 (F51): precise counts. Destiny reads the samples a flare's disc passed against the disc's
-    // pixel area and draws the flare only above 35%; a boolean-ish count hid every flare.
+    // pixel area and draws the flare only above 35% (FUN_007fbd90: vis = (count/area - 0.35)/0.65);
+    // the hardware's PERFECT_ZPASS_COUNTS are exact, and a non-precise query need not be. Checked
+    // in run gh19 (8 November): the game's stored counts and reference areas agree (e.g. 279/289).
     cmdbuf.beginQuery(*occlusion->pool, occlusion->next,
                       occlusion->precise ? vk::QueryControlFlagBits::ePrecise
                                          : vk::QueryControlFlags{});

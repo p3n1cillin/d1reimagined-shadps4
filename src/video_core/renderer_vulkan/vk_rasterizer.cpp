@@ -747,7 +747,14 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
     }
     std::scoped_lock lk{occlusion->mutex};
     occlusion->in_flight -= std::min(occlusion->in_flight, count);
-    occlusion->total += samples;
+    // D1_OCCLUSION_SCALE=k (diagnosis only): counts multiplied by k, to test whether Destiny's
+    // reference area for a flare's disc is larger than the disc's drawn area.
+    static const u64 scale = [] {
+        const char* v = std::getenv("D1_OCCLUSION_SCALE");
+        const long k = v ? std::strtol(v, nullptr, 10) : 1;
+        return u64(k > 0 ? k : 1);
+    }();
+    occlusion->total += samples * scale;
     if (occlusion->logged < 40) {
         ++occlusion->logged;
         LOG_WARNING(Render_Vulkan, "D1_OCCLUSION dump: {} draws, {} samples (precise {})", count, samples,

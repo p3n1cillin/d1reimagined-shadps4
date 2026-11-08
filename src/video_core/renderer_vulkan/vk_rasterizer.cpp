@@ -174,17 +174,17 @@ static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
 // (PixelPipeStatDump) writes, per render backend, a running count of the samples that passed the
 // depth test; the game reads the difference between two dumps (begin, end) around the draws it is
 // testing. Upstream writes an ever-growing stand-in, so every query reads "visible": Destiny's lens
-// flares and the tripmines' glare were drawn through walls. With D1_OCCLUSION=1 each draw after the
-// first dump runs inside a Vulkan occlusion query, and each dump is written once the GPU has done
-// the draws before it: backend 0 the true running count, the other backends constant (a zero
-// difference), each with the valid bit.
+// flares and the tripmines' glare were drawn through walls. With D1_OCCLUSION=1 each draw between
+// a begin dump and its end dump runs inside a Vulkan occlusion query, and the end dump is written
+// once the GPU has done those draws: backend 0 the true running count, the other backends
+// constant (a zero difference), each with the valid bit.
 struct Rasterizer::Occlusion {
     static constexpr u32 PoolSize = 8192;
     vk::UniqueQueryPool pool;
     u32 next = 0;           // the next slot
     u32 interval_first = 0; // the first slot since the last dump
     u32 in_flight = 0;      // slots issued and not yet read back
-    bool armed = false;     // a dump was seen: draws are counted
+    bool armed = false;     // between a begin dump and its end dump: draws are counted
     bool precise = false;   // occlusionQueryPrecise: exact sample counts (F51)
     u32 logged = 0;         // the first dumps' counts go to the log (warning level)
     u64 total = 0;          // samples counted, in dump order (deferred operations run in order)
@@ -665,13 +665,26 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
         return false;
     }
     static constexpr u64 ValidBit = 0x8000000000000000ULL;
+    // Destiny's dumps come in pairs (FUN_00f80ae0): the begin dump at the query's 16-byte-aligned
+    // address, the end dump at address + 8, and it reads only end - begin. So only the draws
+    // between a begin and its end are counted, and a begin dump (nothing counted since the last
+    // end) is written at once without waiting for the GPU: one wait per query instead of two, and
+    // no queries around the rest of the frame (about 3 ms a frame uncapped, runs gh22/gh23).
+    const bool is_end = (reinterpret_cast<uintptr_t>(results) & 8) != 0;
     u32 first, count;
     {
         std::scoped_lock lk{occlusion->mutex};
-        occlusion->armed = true;
+        occlusion->armed = !is_end;
         first = occlusion->interval_first;
         count = (occlusion->next + Occlusion::PoolSize - first) % Occlusion::PoolSize;
         occlusion->interval_first = occlusion->next;
+        if (count == 0) {
+            results[0] = occlusion->total | ValidBit;
+            for (u32 i = 1; i < pairs; ++i) {
+                results[2 * i] = ValidBit;
+            }
+            return true;
+        }
     }
     // The game reads the dump right after it (lens flares, the tripmines' glare): a dump written
     // later, by a deferred operation, read as "not yet valid" and every flare stayed hidden (run

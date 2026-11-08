@@ -34,9 +34,11 @@ static void TestLastValue() {
     LastValue<IndexBufferBind> index;
     assert(index.Changed({1, 0, 0}));
     assert(!index.Changed({1, 0, 0}));
-    assert(index.Changed({1, 64, 0})); // offset
-    assert(index.Changed({1, 64, 1})); // type
-    assert(index.Changed({2, 64, 1})); // buffer
+    assert(index.Changed({1, 64, 0}));      // offset
+    assert(index.Changed({1, 64, 1}));      // type
+    assert(index.Changed({2, 64, 1}));      // buffer
+    assert(index.Changed({2, 64, 1, 128})); // maintenance5 range
+    assert(!index.Changed({2, 64, 1, 128}));
 }
 
 static void TestLastList() {

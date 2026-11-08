@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -133,6 +133,7 @@ public:
     void S_FLBIT_I32_B64(const GcnInst& inst);
     void S_BITSET_B32(const GcnInst& inst, u32 bit_value);
     void S_BITSET_B64(const GcnInst& inst, u32 bit_value);
+    void S_GETREG_B32(const GcnInst& inst);
     void S_GETPC_B64(const GcnInst& inst);
     void S_SAVEEXEC_B64(NegateMode negate, bool is_or, const GcnInst& inst);
     void S_ABS_I32(const GcnInst& inst);
@@ -162,6 +163,8 @@ public:
     void V_SUBREV_F32(const GcnInst& inst);
     void V_MUL_F32(const GcnInst& inst);
     void V_MUL_LEGACY_F32(const GcnInst& inst);
+    void V_MAC_LEGACY_F32(const GcnInst& inst);
+    void V_MAD_LEGACY_F32(const GcnInst& inst);
     void V_MUL_I32_I24(const GcnInst& inst, bool is_signed);
     void V_MIN_F32(const GcnInst& inst, bool is_legacy = false);
     void V_MAX_F32(const GcnInst& inst, bool is_legacy = false);
@@ -223,11 +226,15 @@ public:
     void V_RNDNE_F32(const GcnInst& inst);
     void V_FLOOR_F32(const GcnInst& inst);
     void V_EXP_F32(const GcnInst& inst);
+    void V_LOG_CLAMP_F32(const GcnInst& inst);
     void V_LOG_F32(const GcnInst& inst);
     void V_RCP_F32(const GcnInst& inst);
+    void V_RCP_CLAMP_F32(const GcnInst& inst);
     void V_RCP_LEGACY_F32(const GcnInst& inst);
     void V_RCP_F64(const GcnInst& inst);
+    void V_RSQ_LEGACY_F32(const GcnInst& inst);
     void V_RSQ_F32(const GcnInst& inst);
+    void V_RSQ_CLAMP_F32(const GcnInst& inst);
     void V_SQRT_F32(const GcnInst& inst);
     void V_SIN_F32(const GcnInst& inst);
     void V_COS_F32(const GcnInst& inst);
@@ -246,8 +253,8 @@ public:
     void V_MOVRELSD_B32(const GcnInst& inst);
 
     // VOPC
-    void V_CMP_F32(ConditionOp op, bool set_exec, const GcnInst& inst);
-    void V_CMP_F64(ConditionOp op, bool set_exec, const GcnInst& inst);
+    void V_CMP_F32(ConditionOp op, bool ordered, bool set_exec, const GcnInst& inst);
+    void V_CMP_F64(ConditionOp op, bool ordered, bool set_exec, const GcnInst& inst);
     void V_CMP_U32(ConditionOp op, bool is_signed, bool set_exec, const GcnInst& inst);
     void V_CMP_U64(ConditionOp op, bool is_signed, bool set_exec, const GcnInst& inst);
     void V_CMP_CLASS_F32(const GcnInst& inst);
@@ -329,6 +336,7 @@ public:
     // DS
     template <typename T = IR::U32>
     void DS_OP(const GcnInst& inst, AtomicOp op, bool rtn);
+    void DS_OP_F32(const GcnInst& inst, AtomicOp op);
     void DS_WRITE(int bit_size, bool is_signed, bool is_pair, bool stride64, const GcnInst& inst);
     void DS_READ(int bit_size, bool is_signed, bool is_pair, bool stride64, const GcnInst& inst);
     void DS_SWIZZLE_B32(const GcnInst& inst);
@@ -375,8 +383,7 @@ private:
     // Vector ALU Helpers
     IR::U32 GetCarryIn(const GcnInst& inst);
     void SetCarryOut(const GcnInst& inst, const IR::U1& carry);
-    IR::U32 VMovRelSHelper(u32 src_vgprno, const IR::U32 m0);
-    void VMovRelDHelper(u32 dst_vgprno, const IR::U32 src_val, const IR::U32 m0);
+    IR::F32 LegacyMul(const IR::F32& a, const IR::F32& b);
 
     void ExportRenderTarget(const GcnInst& inst);
     void ExportDepth(const GcnInst& inst);

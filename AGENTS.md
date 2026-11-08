@@ -5,8 +5,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 # AGENTS.md
 
-This is the D1 Reimagined fork of shadPS4: upstream v0.19.0 plus a short series of commits on `d1` that
-Destiny (PS4, build 56578) needs. Read [d1/README.md](d1/README.md) first. The rules agents break:
+This is the D1 Reimagined fork of shadPS4: upstream plus a series of commits on `d1` that Destiny
+(PS4, build 56578) needs. Read [d1/README.md](d1/README.md) first for the upstream baseline.
+The rules agents break:
 
 - **One fix per commit and per pull request**, based on `d1`, with a message that says what was wrong in
   the game and what changed. The series must stay easy to rebase onto a newer upstream.

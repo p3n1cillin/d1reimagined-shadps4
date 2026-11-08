@@ -188,6 +188,13 @@ struct Rasterizer::Occlusion {
     u32 logged = 0;         // the first dumps' counts go to the log (warning level)
     u32 logged_short = 0;   // short intervals (a flare's disc) logged with their draws' state
     std::vector<std::string> recent; // the current interval's first draws, described
+    std::string last_logged;          // the last short interval logged (only changes are)
+    u64 last_samples = 0;
+    // D1_OCCLUSION_AREA=1 (diagnosis): each colourless, depth-read-only draw is drawn again
+    // with the depth test off in a second pool, giving its full on-screen area.
+    vk::UniqueQueryPool area_pool;
+    u32 area_next = 0;
+    u32 area_first = 0;
     u64 total = 0;          // samples counted, in dump order (deferred operations run in order)
     std::mutex mutex;
 };
@@ -223,6 +230,13 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
             occlusion->pool = std::move(pool);
             occlusion->precise = instance.GetPhysicalDevice().getFeatures().occlusionQueryPrecise;
             instance.GetDevice().resetQueryPool(*occlusion->pool, 0, Occlusion::PoolSize);
+            if (const char* a = std::getenv("D1_OCCLUSION_AREA"); a && a[0] == '1') {
+                auto [area_result, area_pool] = instance.GetDevice().createQueryPoolUnique(pool_ci);
+                if (area_result == vk::Result::eSuccess) {
+                    occlusion->area_pool = std::move(area_pool);
+                    instance.GetDevice().resetQueryPool(*occlusion->area_pool, 0, Occlusion::PoolSize);
+                }
+            }
             LOG_INFO(Render_Vulkan, "D1_OCCLUSION: real occlusion queries ({} slots)",
                      Occlusion::PoolSize);
         } else {
@@ -417,6 +431,27 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                     instance_offset);
     }
     OcclusionEnd(cmdbuf, counted);
+    if (counted && occlusion->area_pool && regs.color_target_mask.raw == 0 &&
+        regs.depth_control.depth_enable && !regs.depth_control.depth_write_enable &&
+        !regs.depth_control.stencil_enable) {
+        std::scoped_lock lk{occlusion->mutex};
+        if ((occlusion->area_next + 1) % Occlusion::PoolSize != occlusion->area_first) {
+            cmdbuf.setDepthTestEnable(false);
+            cmdbuf.beginQuery(*occlusion->area_pool, occlusion->area_next,
+                              occlusion->precise ? vk::QueryControlFlagBits::ePrecise
+                                                 : vk::QueryControlFlags{});
+            if (is_indexed) {
+                cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
+                                   s32(vertex_offset), instance_offset);
+            } else {
+                cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
+                            instance_offset);
+            }
+            cmdbuf.endQuery(*occlusion->area_pool, occlusion->area_next);
+            cmdbuf.setDepthTestEnable(true);
+            occlusion->area_next = (occlusion->area_next + 1) % Occlusion::PoolSize;
+        }
+    }
     DebugState.IncDrawCall();
 
     ResetBindings(false);
@@ -627,7 +662,7 @@ bool Rasterizer::OcclusionBegin(vk::CommandBuffer cmdbuf, const RenderState& sta
     std::scoped_lock lk{occlusion->mutex};
     // D1 (F51 diagnosis): describe the first draws of each interval; a short interval (a flare's
     // query disc between its begin and end dumps) is logged with them at the dump.
-    if (occlusion->recent.size() < 4 && occlusion->logged_short < 600) {
+    if (occlusion->recent.size() < 4 && occlusion->logged_short < 3000) {
         const auto& regs = liverpool->regs;
         const auto& vp = regs.viewports[0];
         const auto& vd = regs.viewport_depths[0];
@@ -718,11 +753,44 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
         LOG_WARNING(Render_Vulkan, "D1_OCCLUSION dump: {} draws, {} samples (precise {})", count, samples,
                     occlusion->precise);
     }
-    if (count > 0 && count <= 4 && occlusion->logged_short < 600) {
-        ++occlusion->logged_short;
-        LOG_WARNING(Render_Vulkan, "D1_OCCLUSION short: {} draws, {} samples", count, samples);
+    // The area draws since the last dump (already finished: scheduler.Finish above).
+    u64 area = 0;
+    u32 area_draws = 0;
+    if (occlusion->area_pool) {
+        while (occlusion->area_first != occlusion->area_next) {
+            u64 v = 0;
+            if (device.getQueryPoolResults(*occlusion->area_pool, occlusion->area_first, 1,
+                                           sizeof(u64), &v, sizeof(u64),
+                                           vk::QueryResultFlagBits::e64 |
+                                               vk::QueryResultFlagBits::eWait) ==
+                vk::Result::eSuccess) {
+                area += v;
+            }
+            device.resetQueryPool(*occlusion->area_pool, occlusion->area_first, 1);
+            occlusion->area_first = (occlusion->area_first + 1) % Occlusion::PoolSize;
+            ++area_draws;
+        }
+    }
+    if (count > 0 && count <= 4 && occlusion->logged_short < 3000) {
+        std::string key;
         for (const auto& d : described) {
-            LOG_WARNING(Render_Vulkan, "D1_OCCLUSION   draw: {}", d);
+            key += d;
+            key += '\n';
+        }
+        const u64 last = occlusion->last_samples;
+        const u64 diff = samples > last ? samples - last : last - samples;
+        if (key != occlusion->last_logged || diff > std::max<u64>(16, last / 8)) {
+            ++occlusion->logged_short;
+            occlusion->last_logged = key;
+            occlusion->last_samples = samples;
+            LOG_WARNING(Render_Vulkan,
+                        "D1_OCCLUSION short: {} draws, {} samples; depth test off: {} samples ({} "
+                        "draws), ratio {:.3f}",
+                        count, samples, area, area_draws,
+                        area ? double(samples) / double(area) : -1.0);
+            for (const auto& d : described) {
+                LOG_WARNING(Render_Vulkan, "D1_OCCLUSION   draw: {}", d);
+            }
         }
     }
     results[0] = occlusion->total | ValidBit;

@@ -4,10 +4,12 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "common/debug.h"
 #include "core/debug_state.h"
@@ -168,6 +170,35 @@ static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     return push_data;
 }
 
+// D1 (F51, d1reimagined-source notes): real occlusion queries. The PM4 ZPASS_DONE dump
+// (PixelPipeStatDump) writes, per render backend, a running count of the samples that passed the
+// depth test; the game reads the difference between two dumps (begin, end) around the draws it is
+// testing. Upstream writes an ever-growing stand-in, so every query reads "visible": Destiny's lens
+// flares and the tripmines' glare were drawn through walls. With D1_OCCLUSION=1 each draw after the
+// first dump runs inside a Vulkan occlusion query, and each dump is written once the GPU has done
+// the draws before it: backend 0 the true running count, the other backends constant (a zero
+// difference), each with the valid bit.
+struct Rasterizer::Occlusion {
+    static constexpr u32 PoolSize = 8192;
+    vk::UniqueQueryPool pool;
+    u32 next = 0;           // the next slot
+    u32 interval_first = 0; // the first slot since the last dump
+    u32 in_flight = 0;      // slots issued and not yet read back
+    bool armed = false;     // a dump was seen: draws are counted
+    bool precise = false;   // occlusionQueryPrecise: exact sample counts (F51)
+    u32 logged = 0;         // the first dumps' counts go to the log (warning level)
+    u64 total = 0;          // samples counted, in dump order (deferred operations run in order)
+    std::mutex mutex;
+};
+
+static bool D1Occlusion() {
+    static const bool on = [] {
+        const char* s = std::getenv("D1_OCCLUSION");
+        return s != nullptr && s[0] != '\0' && std::strcmp(s, "0") != 0;
+    }();
+    return on;
+}
+
 Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime& runtime_,
                        AmdGpu::Liverpool* liverpool_)
     : instance{instance_}, scheduler{scheduler_}, runtime{runtime_}, page_manager{this},
@@ -179,6 +210,26 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
       guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
     if (!EmulatorSettings.IsNullGPU()) {
         liverpool->BindRasterizer(this);
+    }
+    if (D1Occlusion() && instance.IsHostQueryResetSupported()) {
+        const vk::QueryPoolCreateInfo pool_ci = {
+            .queryType = vk::QueryType::eOcclusion,
+            .queryCount = Occlusion::PoolSize,
+        };
+        auto [pool_result, pool] = instance.GetDevice().createQueryPoolUnique(pool_ci);
+        if (pool_result == vk::Result::eSuccess) {
+            occlusion = std::make_unique<Occlusion>();
+            occlusion->pool = std::move(pool);
+            occlusion->precise = instance.GetPhysicalDevice().getFeatures().occlusionQueryPrecise;
+            instance.GetDevice().resetQueryPool(*occlusion->pool, 0, Occlusion::PoolSize);
+            LOG_INFO(Render_Vulkan, "D1_OCCLUSION: real occlusion queries ({} slots)",
+                     Occlusion::PoolSize);
+        } else {
+            LOG_ERROR(Render_Vulkan, "D1_OCCLUSION: no query pool ({}); the stand-in stays",
+                      vk::to_string(pool_result));
+        }
+    } else if (D1Occlusion()) {
+        LOG_ERROR(Render_Vulkan, "D1_OCCLUSION: host query reset unsupported; the stand-in stays");
     }
     memory->SetRasterizer(this);
 
@@ -360,6 +411,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     const auto cmdbuf = scheduler.CommandBuffer();
     BindGraphicsPipeline(pipeline);
 
+    const bool counted = OcclusionBegin(cmdbuf);
     if (is_indexed) {
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
                            s32(vertex_offset), instance_offset);
@@ -367,6 +419,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
     }
+    OcclusionEnd(cmdbuf, counted);
     DebugState.IncDrawCall();
 
     ResetBindings(false);
@@ -428,6 +481,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     const auto cmdbuf = scheduler.CommandBuffer();
     BindGraphicsPipeline(pipeline);
 
+    const bool counted = OcclusionBegin(cmdbuf);
     if (is_indexed) {
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
 
@@ -449,6 +503,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         }
         DebugState.IncDrawCall();
     }
+    OcclusionEnd(cmdbuf, counted);
 
     ResetBindings(false);
 }
@@ -575,6 +630,84 @@ void Rasterizer::OnSubmit() {
 
 void Rasterizer::OnFence() {
     texture_cache.ProcessDownloadImages();
+}
+
+bool Rasterizer::OcclusionBegin(vk::CommandBuffer cmdbuf) {
+    if (!occlusion || !occlusion->armed) {
+        return false;
+    }
+    std::scoped_lock lk{occlusion->mutex};
+    if (occlusion->in_flight + 1 >= Occlusion::PoolSize) {
+        return false; // every slot is waiting to be read: this draw goes uncounted
+    }
+    // D1 (F51): precise counts. Destiny reads the samples a flare's disc passed against the disc's
+    // pixel area and draws the flare only above 35% (FUN_007fbd90: vis = (count/area - 0.35)/0.65);
+    // the hardware's PERFECT_ZPASS_COUNTS are exact, and a non-precise query need not be. Checked
+    // in run gh19 (8 November): the game's stored counts and reference areas agree (e.g. 279/289).
+    cmdbuf.beginQuery(*occlusion->pool, occlusion->next,
+                      occlusion->precise ? vk::QueryControlFlagBits::ePrecise
+                                         : vk::QueryControlFlags{});
+    return true;
+}
+
+void Rasterizer::OcclusionEnd(vk::CommandBuffer cmdbuf, bool began) {
+    if (!began) {
+        return;
+    }
+    std::scoped_lock lk{occlusion->mutex};
+    cmdbuf.endQuery(*occlusion->pool, occlusion->next);
+    occlusion->next = (occlusion->next + 1) % Occlusion::PoolSize;
+    ++occlusion->in_flight;
+}
+
+bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
+    if (!occlusion) {
+        return false;
+    }
+    static constexpr u64 ValidBit = 0x8000000000000000ULL;
+    u32 first, count;
+    {
+        std::scoped_lock lk{occlusion->mutex};
+        occlusion->armed = true;
+        first = occlusion->interval_first;
+        count = (occlusion->next + Occlusion::PoolSize - first) % Occlusion::PoolSize;
+        occlusion->interval_first = occlusion->next;
+    }
+    // The game reads the dump right after it (lens flares, the tripmines' glare): a dump written
+    // later, by a deferred operation, read as "not yet valid" and every flare stayed hidden (run
+    // gh10, 8 November). So the draws before it are finished now and the count written at once.
+    scheduler.Finish();
+    const vk::Device device = instance.GetDevice();
+    const vk::QueryPool pool = *occlusion->pool;
+    u64 samples = 0;
+    std::vector<u64> data(count);
+    for (u32 done = 0; done < count;) {
+        const u32 at = (first + done) % Occlusion::PoolSize;
+        const u32 run = std::min(count - done, Occlusion::PoolSize - at);
+        const vk::Result r = device.getQueryPoolResults(
+            pool, at, run, run * sizeof(u64), data.data() + done, sizeof(u64),
+            vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+        if (r == vk::Result::eSuccess) {
+            for (u32 k = done; k < done + run; ++k) {
+                samples += data[k];
+            }
+        }
+        device.resetQueryPool(pool, at, run);
+        done += run;
+    }
+    std::scoped_lock lk{occlusion->mutex};
+    occlusion->in_flight -= std::min(occlusion->in_flight, count);
+    occlusion->total += samples;
+    if (occlusion->logged < 40) {
+        ++occlusion->logged;
+        LOG_WARNING(Render_Vulkan, "D1_OCCLUSION dump: {} draws, {} samples (precise {})", count,
+                    samples, occlusion->precise);
+    }
+    results[0] = occlusion->total | ValidBit;
+    for (u32 i = 1; i < pairs; ++i) {
+        results[2 * i] = ValidBit;
+    }
+    return true;
 }
 
 bool Rasterizer::BindResources(const Pipeline* pipeline) {

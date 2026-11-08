@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <memory>
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -84,6 +85,10 @@ public:
     void OnSubmit();
     void OnFence();
 
+    /// D1 (F51): a PixelPipeStatDump ZPASS_DONE event. Returns false when real occlusion queries
+    /// are off (D1_OCCLUSION unset), and the caller writes its stand-in counter as before.
+    bool OcclusionDump(u64* results, u32 pairs);
+
     PipelineCache& GetPipelineCache() {
         return pipeline_cache;
     }
@@ -103,6 +108,12 @@ public:
 #endif
 
 private:
+    /// D1 (F51): a query around each draw while the game counts occlusion.
+    bool OcclusionBegin(vk::CommandBuffer cmdbuf);
+    void OcclusionEnd(vk::CommandBuffer cmdbuf, bool began);
+    struct Occlusion;
+    std::unique_ptr<Occlusion> occlusion;
+
     void PrepareRenderState(const GraphicsPipeline* pipeline);
     RenderState BeginRendering(const GraphicsPipeline* pipeline);
     void Resolve();

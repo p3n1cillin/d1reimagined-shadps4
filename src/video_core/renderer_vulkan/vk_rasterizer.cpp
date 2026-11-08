@@ -800,6 +800,20 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
             }
         }
     }
+    // D1_OCCLUSION_STANDIN=1 (diagnosis only): this path's timing (the wait above) with upstream's
+    // stand-in values (every backend an ever-growing count): splits "the values" from "the timing".
+    static const bool standin = [] {
+        const char* v = std::getenv("D1_OCCLUSION_STANDIN");
+        return v != nullptr && v[0] == '1';
+    }();
+    if (standin) {
+        static u64 counter = 0;
+        for (u32 i = 0; i < pairs; ++i) {
+            results[2 * i] = counter | ValidBit;
+        }
+        counter += 0x2FFFFFFULL;
+        return true;
+    }
     results[0] = occlusion->total | ValidBit;
     for (u32 i = 1; i < pairs; ++i) {
         results[2 * i] = ValidBit;

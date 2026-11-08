@@ -85,8 +85,8 @@ public:
     void OnSubmit();
     void OnFence();
 
-    /// D1 (F51): a PixelPipeStatDump ZPASS_DONE event. Returns false when real occlusion queries are
-    /// off (D1_OCCLUSION unset), and the caller writes its stand-in counter as before.
+    /// D1 (F51): a PixelPipeStatDump ZPASS_DONE event. Returns false when real occlusion queries
+    /// are off (D1_OCCLUSION unset), and the caller writes its stand-in counter as before.
     bool OcclusionDump(u64* results, u32 pairs);
 
     PipelineCache& GetPipelineCache() {

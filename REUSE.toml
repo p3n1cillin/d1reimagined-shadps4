@@ -116,7 +116,7 @@ SPDX-FileCopyrightText = "Copyright (c) 2021 Advanced Micro Devices, Inc. All ri
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = ["d1/README.md", "d1/config.d1.json", "d1/Build-D1ShadPS4.cmd"]
+path = ["d1/README.md", "d1/config.d1.json", "d1/Build-D1ShadPS4.cmd", "d1/PC-CONTROLS.md", "d1/Run-D1Tests.cmd"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 D1 Reimagined contributors"
 SPDX-License-Identifier = "GPL-2.0-or-later"

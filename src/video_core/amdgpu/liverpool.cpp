@@ -698,8 +698,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     // immediately
                     regs.cp_strmout_cntl.offset_update_done = 1;
                 } else if (event->event_index.Value() == EventIndex::ZpassDone) {
-                    if (event->event_type.Value() == EventType::PixelPipeStatDump &&
-                        rasterizer &&
+                    if (event->event_type.Value() == EventType::PixelPipeStatDump && rasterizer &&
                         rasterizer->OcclusionDump(event->Address<u64*>(), num_counter_pairs)) {
                         // D1 (F51): real occlusion queries (D1_OCCLUSION=1).
                     } else if (event->event_type.Value() == EventType::PixelPipeStatDump) {

@@ -175,8 +175,8 @@ static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
 // depth test; the game reads the difference between two dumps (begin, end) around the draws it is
 // testing. Upstream writes an ever-growing stand-in, so every query reads "visible": Destiny's lens
 // flares and the tripmines' glare were drawn through walls. With D1_OCCLUSION=1 each draw after the
-// first dump runs inside a Vulkan occlusion query, and each dump is written once the GPU has done the
-// draws before it: backend 0 the true running count, the other backends constant (a zero
+// first dump runs inside a Vulkan occlusion query, and each dump is written once the GPU has done
+// the draws before it: backend 0 the true running count, the other backends constant (a zero
 // difference), each with the valid bit.
 struct Rasterizer::Occlusion {
     static constexpr u32 PoolSize = 8192;
@@ -700,8 +700,8 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
     occlusion->total += samples;
     if (occlusion->logged < 40) {
         ++occlusion->logged;
-        LOG_WARNING(Render_Vulkan, "D1_OCCLUSION dump: {} draws, {} samples (precise {})", count, samples,
-                    occlusion->precise);
+        LOG_WARNING(Render_Vulkan, "D1_OCCLUSION dump: {} draws, {} samples (precise {})", count,
+                    samples, occlusion->precise);
     }
     results[0] = occlusion->total | ValidBit;
     for (u32 i = 1; i < pairs; ++i) {

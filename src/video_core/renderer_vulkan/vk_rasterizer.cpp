@@ -184,6 +184,8 @@ struct Rasterizer::Occlusion {
     u32 interval_first = 0; // the first slot since the last dump
     u32 in_flight = 0;      // slots issued and not yet read back
     bool armed = false;     // a dump was seen: draws are counted
+    bool precise = false;   // occlusionQueryPrecise: exact sample counts (F51)
+    u32 logged = 0;         // the first dumps' counts go to the log (warning level)
     u64 total = 0;          // samples counted, in dump order (deferred operations run in order)
     std::mutex mutex;
 };
@@ -217,6 +219,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
         if (pool_result == vk::Result::eSuccess) {
             occlusion = std::make_unique<Occlusion>();
             occlusion->pool = std::move(pool);
+            occlusion->precise = instance.GetPhysicalDevice().getFeatures().occlusionQueryPrecise;
             instance.GetDevice().resetQueryPool(*occlusion->pool, 0, Occlusion::PoolSize);
             LOG_INFO(Render_Vulkan, "D1_OCCLUSION: real occlusion queries ({} slots)",
                      Occlusion::PoolSize);
@@ -623,7 +626,11 @@ bool Rasterizer::OcclusionBegin(vk::CommandBuffer cmdbuf) {
     if (occlusion->in_flight + 1 >= Occlusion::PoolSize) {
         return false; // every slot is waiting to be read: this draw goes uncounted
     }
-    cmdbuf.beginQuery(*occlusion->pool, occlusion->next, {});
+    // D1 (F51): precise counts. Destiny reads the samples a flare's disc passed against the disc's
+    // pixel area and draws the flare only above 35%; a boolean-ish count hid every flare.
+    cmdbuf.beginQuery(*occlusion->pool, occlusion->next,
+                      occlusion->precise ? vk::QueryControlFlagBits::ePrecise
+                                         : vk::QueryControlFlags{});
     return true;
 }
 
@@ -675,6 +682,11 @@ bool Rasterizer::OcclusionDump(u64* results, u32 pairs) {
     std::scoped_lock lk{occlusion->mutex};
     occlusion->in_flight -= std::min(occlusion->in_flight, count);
     occlusion->total += samples;
+    if (occlusion->logged < 40) {
+        ++occlusion->logged;
+        LOG_WARNING(Render_Vulkan, "D1_OCCLUSION dump: {} draws, {} samples (precise {})", count, samples,
+                    occlusion->precise);
+    }
     results[0] = occlusion->total | ValidBit;
     for (u32 i = 1; i < pairs; ++i) {
         results[2 * i] = ValidBit;

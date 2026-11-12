@@ -203,8 +203,9 @@ static bool D1Occlusion() {
 // D1 FORK-LOCAL CHANGE (F53): D1_STENCIL_CLEAR_MASK / D1_STENCIL_CLEAR_LOG. Destiny's reticle draw
 // discards unless stencil bit 0x04 (the sight window) survives, but a RenderDoc capture shows eight
 // later stencil_clear_enable passes (clear values 16,16,16,16,16,0,16,0) that this emulator runs
-// as full 8-bit clears. HYPOTHESIS UNDER TEST: on hardware the clear honours the guest's stencil
-// write mask, so only the masked bits change. Off by default; with the switch off nothing changes.
+// as full 8-bit clears. With the switch on, a clear whose guest stencil write mask is not 0xFF
+// changes only the masked bits (the game's own masks are 0x10 here). Seen in game: with it the
+// reticle and the sight-glass overlays draw. Off by default; with the switch off nothing changes.
 static bool D1EnvOn(const char* name) {
     const char* s = std::getenv(name);
     return s != nullptr && s[0] != '\0' && std::strcmp(s, "0") != 0;
@@ -1993,7 +1994,7 @@ void Rasterizer::UpdateDepthStencilState() const {
 
     if (D1StencilClearMasked(regs)) {
         // D1 FORK-LOCAL CHANGE (F53): let the guest's clear draw write the stencil through the
-        // guest's write mask (hypothesis under test, see D1StencilClearMask). All of this state
+        // guest's write mask (see D1StencilClearMask). All of this state
         // is dynamic, so the pipeline key is untouched.
         constexpr StencilOps replace_ops{
             .fail_op = vk::StencilOp::eReplace,

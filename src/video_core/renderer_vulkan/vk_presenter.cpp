@@ -34,7 +34,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -43,6 +42,7 @@
 #include <span>
 #include <sstream>
 #include <system_error>
+#include <thread>
 #include <vector>
 #include <imgui.h>
 #include <stb_image_write.h>
@@ -413,8 +413,8 @@ static bool WritePng(const std::filesystem::path& path, const std::span<const u8
 }
 
 // D1: D1_SCREENSHOT_TOAST=0 saves screenshots without the "Saved screenshot" notification. Each
-// notification decodes the saved PNG into a GPU texture and shows it for 3 s, one at a time, so a lab
-// bot taking a screenshot several times a second (it reads the game's frames this way when the
+// notification decodes the saved PNG into a GPU texture and shows it for 3 s, one at a time, so a
+// lab bot taking a screenshot several times a second (it reads the game's frames this way when the
 // monitor is off) queued them until the GPU ran out of memory (run agr41, 7 November). With
 // the notification off, the PNG is also encoded and written off the draw scheduler (below).
 static bool D1ScreenshotToast() {

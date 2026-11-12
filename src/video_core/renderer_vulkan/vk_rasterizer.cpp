@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -197,6 +198,32 @@ static bool D1Occlusion() {
         return s != nullptr && s[0] != '\0' && std::strcmp(s, "0") != 0;
     }();
     return on;
+}
+
+// D1 FORK-LOCAL CHANGE (F53): D1_STENCIL_CLEAR_MASK / D1_STENCIL_CLEAR_LOG. Destiny's reticle draw
+// discards unless stencil bit 0x04 (the sight window) survives, but a RenderDoc capture shows eight
+// later stencil_clear_enable passes (clear values 16,16,16,16,16,0,16,0) that this emulator runs
+// as full 8-bit clears. HYPOTHESIS UNDER TEST: on hardware the clear honours the guest's stencil
+// write mask, so only the masked bits change. Off by default; with the switch off nothing changes.
+static bool D1EnvOn(const char* name) {
+    const char* s = std::getenv(name);
+    return s != nullptr && s[0] != '\0' && std::strcmp(s, "0") != 0;
+}
+
+static bool D1StencilClearMask() {
+    static const bool on = D1EnvOn("D1_STENCIL_CLEAR_MASK");
+    return on;
+}
+
+static bool D1StencilClearLog() {
+    static const bool on = D1StencilClearMask() || D1EnvOn("D1_STENCIL_CLEAR_LOG");
+    return on;
+}
+
+// True when a guest stencil clear is to be done as a masked draw instead of an attachment clear.
+static bool D1StencilClearMasked(const AmdGpu::Regs& regs) {
+    return D1StencilClearMask() && regs.depth_render_control.stencil_clear_enable &&
+           regs.depth_buffer.StencilValid() && regs.stencil_ref_front.stencil_write_mask != 0xFF;
 }
 
 Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime& runtime_,
@@ -1534,13 +1561,16 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
              regs.depth_control.depth_write_enable) ||
             texture_cache.IsMetaCleared(htile_address, slice);
         const bool is_stencil_clear = regs.depth_render_control.stencil_clear_enable;
+        // D1 FORK-LOCAL CHANGE (F53): a masked clear is a draw, not an attachment clear.
+        const bool d1_masked_stencil_clear = D1StencilClearMasked(regs);
         texture_cache.TouchMeta(htile_address, slice, false);
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
 
         const bool has_stencil = image.info.props.has_stencil;
         // Stencil writes can be enabled while depth writes are off.
-        const bool stencil_write =
-            has_stencil && regs.depth_control.stencil_enable && !desc.view_info.is_storage;
+        const bool stencil_write = has_stencil &&
+                                   (regs.depth_control.stencil_enable || d1_masked_stencil_clear) &&
+                                   !desc.view_info.is_storage;
         const auto new_layout = desc.view_info.is_storage
                                     ? has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
                                                   : vk::ImageLayout::eDepthAttachmentOptimal
@@ -1571,9 +1601,10 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             attachment.depth_clear = is_depth_clear;
         }
         if (regs.depth_buffer.StencilValid()) {
-            attachment.clear_value[1] = is_stencil_clear ? regs.stencil_clear : 0u;
+            const bool do_stencil_clear = is_stencil_clear && !d1_masked_stencil_clear;
+            attachment.clear_value[1] = do_stencil_clear ? regs.stencil_clear : 0u;
             attachment.has_stencil = true;
-            attachment.stencil_clear = is_stencil_clear;
+            attachment.stencil_clear = do_stencil_clear;
         }
 
         image.usage.depth_target = true;
@@ -1926,6 +1957,60 @@ void Rasterizer::UpdateDepthStencilState() const {
             front ? regs.poly_offset.front_offset : regs.poly_offset.back_offset,
             regs.poly_offset.depth_bias,
             (front ? regs.poly_offset.front_scale : regs.poly_offset.back_scale) / 16.f);
+    }
+
+    if (D1StencilClearLog() && regs.depth_render_control.stencil_clear_enable) {
+        static std::atomic<u32> d1_stencil_clear_logged{0};
+        if (d1_stencil_clear_logged.fetch_add(1) < 64) {
+            const auto& f = regs.stencil_ref_front;
+            const auto& b = regs.stencil_ref_back;
+            const auto& sc = regs.stencil_control;
+            const auto& ss = regs.screen_scissor;
+            const auto& gs = regs.generic_scissor;
+            const auto& vp = regs.viewports[0];
+            LOG_ERROR(
+                Render_Vulkan,
+                "D1_STENCIL_CLEAR clear {:#x} front wm {:#x} mask {:#x} test {:#x} op {:#x} "
+                "back wm {:#x} mask {:#x} test {:#x} op {:#x} stencil_enable {} backface {} "
+                "front ops fail {} zpass {} zfail {} func {} depth_clear {} indices {} prim {} "
+                "screen_scissor {},{}-{},{} generic_scissor {},{}-{},{} vp0 scale {} {} {} "
+                "offset {} {} {} stencil_addr {:#x} stencil_write_addr {:#x} path {}",
+                u32(regs.stencil_clear), f.stencil_write_mask, f.stencil_mask, f.stencil_test_val,
+                f.stencil_op_val, b.stencil_write_mask, b.stencil_mask, b.stencil_test_val,
+                b.stencil_op_val, u32(regs.depth_control.stencil_enable),
+                u32(regs.depth_control.backface_enable), u32(sc.stencil_fail_front),
+                u32(sc.stencil_zpass_front), u32(sc.stencil_zfail_front),
+                u32(regs.depth_control.stencil_ref_func),
+                u32(regs.depth_render_control.depth_clear_enable), regs.num_indices,
+                u32(regs.primitive_type), ss.top_left_x, ss.top_left_y, ss.bottom_right_x,
+                ss.bottom_right_y, u32(gs.top_left_x), u32(gs.top_left_y), u32(gs.bottom_right_x),
+                u32(gs.bottom_right_y), vp.xscale, vp.yscale, vp.zscale, vp.xoffset, vp.yoffset,
+                vp.zoffset, regs.depth_buffer.StencilAddress(),
+                regs.depth_buffer.StencilWriteAddress(),
+                D1StencilClearMasked(regs) ? "masked" : "full clear");
+        }
+    }
+
+    if (D1StencilClearMasked(regs)) {
+        // D1 FORK-LOCAL CHANGE (F53): let the guest's clear draw write the stencil through the
+        // guest's write mask (hypothesis under test, see D1StencilClearMask). All of this state
+        // is dynamic, so the pipeline key is untouched.
+        constexpr StencilOps replace_ops{
+            .fail_op = vk::StencilOp::eReplace,
+            .pass_op = vk::StencilOp::eReplace,
+            .depth_fail_op = vk::StencilOp::eReplace,
+            .compare_op = vk::CompareOp::eAlways,
+        };
+        const u32 ref = u32(regs.stencil_clear) & 0xFF;
+        dynamic_state.SetStencilTestEnabled(true);
+        dynamic_state.SetStencilOps(replace_ops, replace_ops);
+        dynamic_state.SetStencilReferences(ref, ref);
+        dynamic_state.SetStencilWriteMasks(regs.stencil_ref_front.stencil_write_mask,
+                                           regs.depth_control.backface_enable
+                                               ? regs.stencil_ref_back.stencil_write_mask
+                                               : regs.stencil_ref_front.stencil_write_mask);
+        dynamic_state.SetStencilCompareMasks(0xFFU, 0xFFU);
+        return;
     }
 
     const auto stencil_test_enabled =

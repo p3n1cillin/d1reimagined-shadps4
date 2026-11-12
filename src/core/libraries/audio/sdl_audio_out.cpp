@@ -19,6 +19,7 @@
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
 #include "core/libraries/audio/d1_audio_sync.h"
+#include "core/libraries/audio/d1_audio_tap.h"
 #include "core/libraries/kernel/threads.h"
 
 // SIMD support detection
@@ -131,13 +132,37 @@ public:
                                          std::to_string(ps4_downmix ? 2u : num_channels) + "-" +
                                          std::to_string(ms) + ".f32";
                 tap_file = std::fopen(path.c_str(), "wb");
+                tap_t0 = std::chrono::steady_clock::now();
+                tap_frames = 0;
             } else if (!want && tap_file) {
                 std::fclose(tap_file);
                 tap_file = nullptr;
             }
         }
         if (tap_file) {
+            const u32 bytes_per_frame = sizeof(float) * (ps4_downmix ? 2u : num_channels);
+            const u32 block_frames = internal_buffer_size / bytes_per_frame;
+            // Gaps in the game's output are written as silence, so the file tracks wall-clock
+            // time (the recorder lines it up by its start time alone).
+            static const bool pad_on = D1AudioTap::PadEnabled();
+            if (pad_on) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - tap_t0)
+                                         .count();
+                const u64 pad =
+                    D1AudioTap::D1TapPadFrames(static_cast<u64>(std::max<s64>(elapsed, 0)),
+                                               sample_rate, tap_frames, block_frames);
+                tap_frames += pad;
+                static const u8 zeros[4096]{};
+                u64 pad_bytes = pad * bytes_per_frame;
+                while (pad_bytes > 0) {
+                    const size_t n = static_cast<size_t>(std::min<u64>(pad_bytes, sizeof(zeros)));
+                    std::fwrite(zeros, 1, n, tap_file);
+                    pad_bytes -= n;
+                }
+            }
             std::fwrite(internal_buffer, 1, internal_buffer_size, tap_file);
+            tap_frames += block_frames;
         }
     }
 
@@ -713,6 +738,8 @@ private:
     u32 tap_count{0};
     u32 tap_port{~0u};
     std::FILE* tap_file{nullptr};
+    std::chrono::steady_clock::time_point tap_t0{};
+    u64 tap_frames{0};
 
     // Buffers
     u32 internal_buffer_size{0};
